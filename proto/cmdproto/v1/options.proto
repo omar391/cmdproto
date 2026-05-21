@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package cmdproto.v1;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MethodOptions {
+  Command command = 50001;
+}
+
+extend google.protobuf.FieldOptions {
+  Param param = 50002;
+}
+
+message Command {
+  string path = 1;
+  string summary = 2;
+  repeated string alias = 3;
+  repeated CliExample example = 4;
+  bool hidden = 5;
+  bool deprecated = 6;
+}
+
+message CliExample {
+  string command = 1;
+  string description = 2;
+}
+
+message Param {
+  Positional positional = 1;
+  Flag flag = 2;
+  string help = 3;
+  bool hidden = 4;
+}
+
+message Positional {
+  uint32 index = 1;
+}
+
+message Flag {
+  string long = 1;
+  string short = 2;
+}

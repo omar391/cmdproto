@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package greeter.v1;
+
+import "cmdproto/v1/options.proto";
+
+service GreeterService {
+  rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {
+    option (cmdproto.v1.command) = {
+      path: "greet"
+      summary: "Render a greeting."
+      alias: "hello"
+      example: {
+        command: "greeter greet Ada -s"
+        description: "Render a loud greeting."
+      }
+    };
+  }
+}
+
+message SayHelloRequest {
+  string name = 1 [
+    (cmdproto.v1.param) = {
+      positional: { index: 1 }
+      help: "Name to greet."
+    }
+  ];
+  bool shout = 2 [
+    (cmdproto.v1.param) = {
+      flag: {
+        long: "shout"
+        short: "s"
+      }
+      help: "Uppercase the greeting."
+    }
+  ];
+}
+
+message SayHelloResponse {
+  string message = 1;
+}

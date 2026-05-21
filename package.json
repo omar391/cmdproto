@@ -1,0 +1,33 @@
+{
+  "name": "cmdproto",
+  "version": "0.1.0",
+  "description": "Proto-first ABI boundary toolkit for strict human and machine command interfaces.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "schema:validate": "tsx scripts/validate-schema.ts",
+    "schema:build": "mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb && tsx scripts/validate-schema.ts dist/schema.binpb",
+    "schema:build:greeter": "mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && tsx scripts/validate-schema.ts examples/greeter/dist/schema.binpb",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "example:greeter": "npm run schema:build:greeter --silent && tsx examples/greeter/src/app.ts",
+    "check": "buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

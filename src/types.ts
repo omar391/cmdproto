@@ -1,0 +1,118 @@
+import type {
+  DescField,
+  DescMessage,
+  DescMethod,
+  FileRegistry,
+  JsonObject as BufJsonObject,
+  JsonValue
+} from "@bufbuild/protobuf";
+import type { FileDescriptorSet } from "@bufbuild/protobuf/wkt";
+
+export type JsonObject = BufJsonObject;
+
+export interface CliExample {
+  command: string;
+  description: string;
+}
+
+export interface CommandOptions {
+  path: string;
+  summary: string;
+  alias: string[];
+  example: CliExample[];
+  hidden: boolean;
+  deprecated: boolean;
+}
+
+export interface PositionalOptions {
+  index: number;
+}
+
+export interface FlagOptions {
+  long: string;
+  short: string;
+}
+
+export interface ParamOptions {
+  positional?: PositionalOptions;
+  flag?: FlagOptions;
+  help: string;
+  hidden: boolean;
+}
+
+export interface FieldSpec {
+  name: string;
+  jsonName: string;
+  localName: string;
+  descriptor: DescField;
+  param: ParamOptions;
+}
+
+export interface MethodSpec {
+  name: string;
+  serviceName: string;
+  rpcName: string;
+  input: DescMessage;
+  output: DescMessage;
+  descriptor: DescMethod;
+  command: CommandOptions;
+  fields: FieldSpec[];
+}
+
+export interface CmdProtoSchema {
+  registry: FileRegistry;
+  fileDescriptorSet: FileDescriptorSet;
+  descriptorBytes: Uint8Array;
+  methods: MethodSpec[];
+  methodByName: Map<string, MethodSpec>;
+}
+
+export interface CommandRequestJson {
+  method: string;
+  params?: JsonValue;
+  requestId?: string;
+}
+
+export interface CommandEventJson {
+  type: string;
+  payload?: JsonValue;
+}
+
+export interface CommandErrorJson {
+  code: string;
+  message: string;
+  details?: JsonValue;
+}
+
+export type CommandResponseJson =
+  | {
+      ok: true;
+      result: JsonValue;
+      events: CommandEventJson[];
+      requestId?: string;
+    }
+  | {
+      ok: false;
+      error: CommandErrorJson;
+      events: CommandEventJson[];
+      requestId?: string;
+    };
+
+export interface HandlerContext {
+  method: MethodSpec;
+  request: CommandRequestJson;
+  emit(event: CommandEventJson): void;
+}
+
+export type CmdProtoHandler = (
+  params: JsonObject,
+  context: HandlerContext
+) => JsonValue | Promise<JsonValue>;
+
+export type HandlerMap = Record<string, CmdProtoHandler>;
+
+export interface CliResult {
+  statusCode: number;
+  stdout: string;
+  stderr: string;
+}
