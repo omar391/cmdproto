@@ -14,13 +14,13 @@
     }
   },
   "scripts": {
-    "schema:validate": "tsx scripts/validate-schema.ts",
-    "schema:build": "mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb && tsx scripts/validate-schema.ts dist/schema.binpb",
-    "schema:build:greeter": "mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && tsx scripts/validate-schema.ts examples/greeter/dist/schema.binpb",
+    "schema:build": "buf lint proto && mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb",
+    "schema:build:greeter": "buf lint examples/greeter/proto && mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb",
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "test:plugin": "cd tools/buf-plugin-cmdproto && go test ./...",
     "example:greeter": "npm run schema:build:greeter --silent && tsx examples/greeter/src/app.ts",
-    "check": "buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test"
+    "check": "buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test && npm run test:plugin"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0"

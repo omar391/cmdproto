@@ -25,7 +25,7 @@ V1 keeps the core ABI small:
 ## Authoring A New App
 
 ```proto
-syntax = "proto3";
+edition = "2024";
 
 package fastbrowser.v1;
 
@@ -87,14 +87,18 @@ await runMain({ handlers });
 2. Build your app proto into a descriptor set, for example:
 
 ```sh
+buf lint examples/greeter/proto
 buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb
 ```
 
-3. Buf compiles your `.proto` files into a `schema.binpb` descriptor artifact,
+3. `buf lint` runs both Buf's built-in lint rules and the local `cmdproto`
+   check plugin, so command-path, alias, flag, positional, and prefix-shadowing
+   issues fail during schema authoring instead of only at runtime.
+4. Buf compiles your `.proto` files into a `schema.binpb` descriptor artifact,
    which is a protobuf `FileDescriptorSet`.
-4. `cmdproto` loads that descriptor set, reads your custom `command` / `param`
-   options, and validates command-path plus flag semantics automatically.
-5. Register handlers and invoke the app through human commands or
+5. `cmdproto` loads that descriptor set and uses the already-linted schema at
+   runtime, while still re-validating defensively inside the TypeScript runtime.
+6. Register handlers and invoke the app through human commands or
    `cmdproto invoke --json`.
 
 `schema.binpb` is just the compiled schema artifact. It is the CLI/router
@@ -103,16 +107,18 @@ manifest that `cmdproto` actually consumes at runtime. We do not read raw
 hard requirement; `runMain({ handlers, schemaPath: "/some/other/schema.binpb" })`
 works too.
 
-The current validator runs during schema builds and again whenever the runtime
-loads a descriptor set, so duplicate command paths, duplicate flags, reserved
-`cmdproto` paths, and invalid positional layouts fail fast without a separate
-manual check step.
+The repo now ships a local Buf check plugin at `scripts/buf-plugin-cmdproto`.
+That moves `cmdproto` schema validation into `buf lint`, so duplicate command
+paths, alias collisions, duplicate flags, reserved `cmdproto` paths, invalid
+positional layouts, and prefix-shadowing fail in the normal protobuf authoring
+loop. The TypeScript runtime still validates the descriptor set as a fallback.
 
 In this repo specifically:
 
 - `npm run schema:build` builds the library's own `proto/` schema to `dist/schema.binpb`.
 - `npm run schema:build:greeter` builds the example app schema to `examples/greeter/dist/schema.binpb`.
 - `npm run example:greeter -- greet Ada -s` uses the example-owned schema file, not the root one.
+- `buf lint` requires Go locally because the repo-local plugin launcher runs `go run ./tools/buf-plugin-cmdproto/...`.
 
 ## Development
 

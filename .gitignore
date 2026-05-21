@@ -3,3 +3,9 @@ dist/
 *.tsbuildinfo
 .DS_Store
 
+
+# git-land trunk
+.trunk/*
+!.trunk/trunk.yaml
+!.trunk/configs/
+!.trunk/configs/**

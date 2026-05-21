@@ -5,7 +5,9 @@ modules:
 lint:
   use:
     - STANDARD
+    - CMDPROTO
+plugins:
+  - plugin: ./scripts/buf-plugin-cmdproto
 breaking:
   use:
     - FILE
-
