@@ -65,7 +65,7 @@ describe("cmdproto runtime", () => {
       (
         await runCli(runtime, [
           "cmdproto",
-          "invoke",
+          "execute",
           "--json",
           JSON.stringify({
             method: GREETER_METHOD,
@@ -110,7 +110,7 @@ describe("cmdproto runtime", () => {
     const runtime = createGreeterRuntime(SCHEMA_PATH);
     const result = await runCli(runtime, [
       "cmdproto",
-      "invoke",
+      "execute",
       "--json",
       JSON.stringify({
         method: GREETER_METHOD,
@@ -136,35 +136,32 @@ describe("cmdproto runtime", () => {
     assert.equal(response.error.code, "INVALID_REQUEST");
   });
 
-  it("generates help and method listing from descriptors", async () => {
+  it("renders coherent text and JSON help from descriptors", async () => {
     const runtime = createGreeterRuntime(SCHEMA_PATH);
     const help = renderHelp(runtime.schema);
-    const listed = parseStdout(
-      (await runCli(runtime, ["cmdproto", "methods", "list"])).stdout
+    const globalJson = parseStdout(
+      (await runCli(runtime, ["--help", "--json"])).stdout
     );
-    const described = parseStdout(
-      (await runCli(runtime, ["cmdproto", "methods", "describe", GREETER_METHOD])).stdout
+    const commandHelp = await runCli(runtime, ["greet", "--help"]);
+    const commandJson = parseStdout(
+      (await runCli(runtime, ["greet", "--help", "--json"])).stdout
+    );
+    const controlJson = parseStdout(
+      (await runCli(runtime, ["cmdproto", "--help", "--json"])).stdout
     );
 
     assert.match(help, /greet <NAME> \[-s, --shout\]\s+Render a greeting\./);
-    assert.match(help, /cmdproto invoke --json/);
-    assert.equal(listed.ok, true);
-    assert.equal(listed.result.methods[0].method, GREETER_METHOD);
-    assert.equal(described.ok, true);
-    assert.equal(described.result.fields[0].name, "name");
-    assert.equal(described.result.fields[1].shortFlag, "s");
-    assert.equal(described.result.examples[0].command, "greeter greet Ada -s");
-  });
-
-  it("exports the descriptor set through introspection", async () => {
-    const runtime = createGreeterRuntime(SCHEMA_PATH);
-    const exported = parseStdout(
-      (await runCli(runtime, ["cmdproto", "schema", "export"])).stdout
-    );
-
-    assert.equal(exported.ok, true);
-    assert.equal(exported.result.format, "file_descriptor_set.binpb.base64");
-    assert.ok(Buffer.from(exported.result.schema, "base64").byteLength > 0);
+    assert.match(help, /cmdproto execute --json/);
+    assert.equal(globalJson.ok, true);
+    assert.equal(globalJson.result.commands[0].method, GREETER_METHOD);
+    assert.match(commandHelp.stdout, /Usage:\n  greet <NAME> \[-s, --shout\]/);
+    assert.match(commandHelp.stdout, /Machine method:\n  greeter\.v1\.GreeterService\.SayHello/);
+    assert.equal(commandJson.ok, true);
+    assert.equal(commandJson.result.fields[0].name, "name");
+    assert.equal(commandJson.result.fields[1].shortFlag, "s");
+    assert.equal(commandJson.result.examples[0].command, "greeter greet Ada -s");
+    assert.equal(controlJson.ok, true);
+    assert.equal(controlJson.result.commands[0].name, "cmdproto execute");
   });
 
   it("returns a stable machine-parseable error envelope", async () => {
@@ -173,7 +170,7 @@ describe("cmdproto runtime", () => {
       (
         await runCli(runtime, [
           "cmdproto",
-          "invoke",
+          "execute",
           "--json",
           JSON.stringify({
             method: "greeter.v1.GreeterService.Missing",
@@ -184,10 +181,9 @@ describe("cmdproto runtime", () => {
       ).stdout
     );
 
-    assert.deepEqual(Object.keys(response).sort(), ["error", "events", "ok", "requestId"]);
+    assert.deepEqual(Object.keys(response).sort(), ["error", "ok", "requestId"]);
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "METHOD_NOT_FOUND");
-    assert.deepEqual(response.events, []);
     assert.equal(response.requestId, "err-1");
   });
 });
@@ -206,11 +202,22 @@ describe("cmdproto schema validation", () => {
   });
 
   it("rejects reserved cmdproto command roots", () => {
-    const method = mockMethod("cmdproto invoke", [mockField("name", { positional: { index: 1 } })]);
+    const method = mockMethod("cmdproto execute", [mockField("name", { positional: { index: 1 } })]);
 
     assert.throws(
       () => validateMethodSpecs([method]),
       /reserved command root "cmdproto"/
+    );
+  });
+
+  it("rejects reserved json long flags", () => {
+    const method = mockMethod("session create", [
+      mockField("output", { flag: { long: "json", short: "o" } })
+    ]);
+
+    assert.throws(
+      () => validateMethodSpecs([method]),
+      /reserved long flag "--json"/
     );
   });
 });

@@ -24,7 +24,7 @@ var (
 	longFlagRe           = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	shortFlagRe          = regexp.MustCompile(`^[A-Za-z0-9]$`)
 	reservedCommandRoots = map[string]struct{}{"cmdproto": {}}
-	reservedLongFlags    = map[string]struct{}{"help": {}}
+	reservedLongFlags    = map[string]struct{}{"help": {}, "json": {}}
 	reservedShortFlags   = map[string]struct{}{"h": {}}
 )
 

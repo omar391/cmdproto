@@ -5,7 +5,7 @@ const COMMAND_TOKEN_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LONG_FLAG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SHORT_FLAG_RE = /^[A-Za-z0-9]$/;
 const RESERVED_COMMAND_ROOTS = new Set(["cmdproto"]);
-const RESERVED_LONG_FLAGS = new Set(["help"]);
+const RESERVED_LONG_FLAGS = new Set(["help", "json"]);
 const RESERVED_SHORT_FLAGS = new Set(["h"]);
 
 interface CommandBinding {

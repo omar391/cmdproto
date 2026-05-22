@@ -37,8 +37,6 @@ export function loadSchemaFromBinary(bytes: Uint8Array): CmdProtoSchema {
 
   return {
     registry,
-    fileDescriptorSet,
-    descriptorBytes: bytes,
     methods,
     methodByName: new Map(methods.map((method) => [method.name, method]))
   };

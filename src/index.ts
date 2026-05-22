@@ -29,7 +29,6 @@ export type {
   CmdProtoSchema,
   CmdProtoHandler,
   CommandErrorJson,
-  CommandEventJson,
   CommandRequestJson,
   CommandResponseJson,
   FieldSpec,

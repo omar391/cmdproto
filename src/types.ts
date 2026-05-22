@@ -6,7 +6,6 @@ import type {
   JsonObject as BufJsonObject,
   JsonValue
 } from "@bufbuild/protobuf";
-import type { FileDescriptorSet } from "@bufbuild/protobuf/wkt";
 
 export type JsonObject = BufJsonObject;
 
@@ -61,8 +60,6 @@ export interface MethodSpec {
 
 export interface CmdProtoSchema {
   registry: FileRegistry;
-  fileDescriptorSet: FileDescriptorSet;
-  descriptorBytes: Uint8Array;
   methods: MethodSpec[];
   methodByName: Map<string, MethodSpec>;
 }
@@ -73,35 +70,29 @@ export interface CommandRequestJson {
   requestId?: string;
 }
 
-export interface CommandEventJson {
-  type: string;
-  payload?: JsonValue;
-}
-
 export interface CommandErrorJson {
   code: string;
   message: string;
   details?: JsonValue;
 }
 
+// V1 keeps execution unary. If we add live events later, they should arrive on a
+// persistent transport adapter rather than being buffered into the final reply.
 export type CommandResponseJson =
   | {
       ok: true;
       result: JsonValue;
-      events: CommandEventJson[];
       requestId?: string;
     }
   | {
       ok: false;
       error: CommandErrorJson;
-      events: CommandEventJson[];
       requestId?: string;
     };
 
 export interface HandlerContext {
   method: MethodSpec;
   request: CommandRequestJson;
-  emit(event: CommandEventJson): void;
 }
 
 export type CmdProtoHandler = (

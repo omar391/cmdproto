@@ -5,7 +5,6 @@ import {
 } from "@bufbuild/protobuf";
 import type {
   CmdProtoSchema,
-  CommandEventJson,
   CommandRequestJson,
   CommandResponseJson,
   HandlerContext,
@@ -45,7 +44,6 @@ export class CmdProtoRuntime {
       return errorResponse(error);
     }
 
-    const events: CommandEventJson[] = [];
     const method = this.schema.methodByName.get(request.method);
     if (!method) {
       return errorResponse(
@@ -66,16 +64,13 @@ export class CmdProtoRuntime {
       const params = validateParams(this.schema, method, request.params ?? {});
       const context: HandlerContext = {
         method,
-        request,
-        emit(event) {
-          events.push(event);
-        }
+        request
       };
       const rawResult = await handler(params, context);
       const result = validateResult(this.schema, method, rawResult);
-      return withRequestId({ ok: true, result, events }, request.requestId);
+      return withRequestId({ ok: true, result }, request.requestId);
     } catch (error) {
-      return errorResponse(error, request.requestId, events);
+      return errorResponse(error, request.requestId);
     }
   }
 }
@@ -153,8 +148,7 @@ function validateResult(
 
 function errorResponse(
   error: unknown,
-  requestId?: string,
-  events: CommandEventJson[] = []
+  requestId?: string
 ): CommandResponseJson {
   const normalized =
     error instanceof CmdProtoError
@@ -168,8 +162,7 @@ function errorResponse(
         code: normalized.code,
         message: normalized.message,
         ...(normalized.details === undefined ? {} : { details: normalized.details })
-      },
-      events
+      }
     },
     requestId
   );

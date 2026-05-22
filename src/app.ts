@@ -32,6 +32,8 @@ export async function executeApp({
   argv = process.argv.slice(2),
   stdin = ""
 }: RunMainOptions): Promise<CliResult> {
+  // The app runtime stays transport-neutral. Today `runCli()` is the one-shot
+  // stdio adapter; future HTTP/streaming adapters should sit beside it.
   const runtime = createRuntimeFromFile(handlers, schemaPath);
   return runCli(runtime, argv, stdin);
 }

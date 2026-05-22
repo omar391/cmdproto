@@ -2,7 +2,7 @@
 
 `cmdproto` is a proto-first command ABI toolkit. App authors describe RPCs in
 protobuf, annotate CLI bindings with custom options, and get one descriptor-led
-surface for human commands, machine JSON invocation, and future transport
+surface for human commands, help/introspection, machine JSON execution, and future transport
 adapters.
 
 V1 keeps the core ABI small:
@@ -14,8 +14,12 @@ V1 keeps the core ABI small:
 ## V1 Shape
 
 - Human CLI: `app greet Ada -s`
-- Machine CLI: `app cmdproto invoke --json '{"method":"greeter.v1.GreeterService.SayHello","params":{"name":"Ada"}}'`
-- Introspection: `app cmdproto methods list`
+- Command help: `app greet --help`
+- Structured help: `app greet --help --json`
+- Machine CLI: `app cmdproto execute --json '{"method":"greeter.v1.GreeterService.SayHello","params":{"name":"Ada"}}'`
+
+There is no separate `describe` command in V1. Structured help hangs off the
+same per-command `--help` surface that humans use.
 
 ## Repo Layout
 
@@ -98,20 +102,20 @@ buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/di
    which is a protobuf `FileDescriptorSet`.
 5. `cmdproto` loads that descriptor set and uses the already-linted schema at
    runtime, while still re-validating defensively inside the TypeScript runtime.
-6. Register handlers and invoke the app through human commands or
-   `cmdproto invoke --json`.
+6. Register handlers and use the app through human commands, `--help`, or
+   `cmdproto execute --json`.
 
-`schema.binpb` is just the compiled schema artifact. It is the CLI/router
-manifest that `cmdproto` actually consumes at runtime. We do not read raw
-`.proto` text in the app process. `dist/` is only the default location, not a
-hard requirement; `runMain({ handlers, schemaPath: "/some/other/schema.binpb" })`
-works too.
+`schema.binpb` is the compiled descriptor artifact that `cmdproto` consumes at
+runtime. We do not read raw `.proto` text in the app process. `dist/` is only
+the default location, not a hard requirement; for example,
+`runMain({ handlers, schemaPath: "/some/other/schema.binpb" })` works too.
 
 The repo now ships a local Buf check plugin at `scripts/buf-plugin-cmdproto`.
 That moves `cmdproto` schema validation into `buf lint`, so duplicate command
 paths, alias collisions, duplicate flags, reserved `cmdproto` paths, invalid
-positional layouts, and prefix-shadowing fail in the normal protobuf authoring
-loop. The TypeScript runtime still validates the descriptor set as a fallback.
+positional layouts, reserved meta flags like `--help` and `--json`, and
+prefix-shadowing fail in the normal protobuf authoring loop. The TypeScript
+runtime still validates the descriptor set as a fallback.
 
 In this repo specifically:
 
@@ -127,5 +131,7 @@ npm install
 npm run check
 npm run schema:build:greeter
 npm run example:greeter -- greet Ada -s
-npm run example:greeter -- cmdproto methods describe greeter.v1.GreeterService.SayHello
+npm run example:greeter -- greet --help
+npm run example:greeter -- greet --help --json
+npm run example:greeter -- cmdproto execute --json '{"method":"greeter.v1.GreeterService.SayHello","params":{"name":"Ada","shout":true}}'
 ```

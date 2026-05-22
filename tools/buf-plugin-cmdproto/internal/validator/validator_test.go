@@ -151,6 +151,43 @@ message SessionCreateResponse {
 	}
 }
 
+func TestBufLintRejectsReservedJsonFlag(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
+    option (cmdproto.v1.command) = {
+      path: "session create"
+    };
+  }
+}
+
+message SessionCreateRequest {
+  string output = 1 [
+    (cmdproto.v1.param) = {
+      flag: {
+        long: "json"
+      }
+    }
+  ];
+}
+
+message SessionCreateResponse {
+  string session_id = 1;
+}
+`)
+
+	output := runBufLintExpectFailure(t, workspace)
+	if !strings.Contains(output, "reserved long flag") || !strings.Contains(output, "--json") {
+		t.Fatalf("expected reserved json flag error, got:\n%s", output)
+	}
+}
+
 func writeWorkspace(t *testing.T, appProto string) string {
 	t.Helper()
 

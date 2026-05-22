@@ -11,14 +11,20 @@ import type {
 } from "./types.js";
 import { renderMethodUsage, splitCommandPath } from "./validation.js";
 
+const HELP_FLAG = "--help";
+const JSON_FLAG = "--json";
+const EXECUTE_USAGE = "cmdproto execute --json '<request>'";
+const EXECUTE_SUMMARY = "Execute a machine request envelope.";
+
 export async function runCli(
   runtime: CmdProtoRuntime,
   argv: string[],
   stdin = ""
 ): Promise<CliResult> {
   try {
-    if (argv.length === 0 || argv[0] === "--help") {
-      return textResult(renderHelp(runtime.schema));
+    const helpResult = runHelpCommand(runtime.schema, argv);
+    if (helpResult) {
+      return helpResult;
     }
 
     const controlResult = await runCmdprotoCommand(runtime, argv, stdin);
@@ -36,8 +42,7 @@ export async function runCli(
         error:
           error instanceof CmdProtoError
             ? { code: error.code, message: error.message }
-            : { code: "INTERNAL", message: formatError(error) },
-        events: []
+            : { code: "INTERNAL", message: formatError(error) }
       },
       1
     );
@@ -67,11 +72,12 @@ export function renderHelp(schema: CmdProtoSchema): string {
   }
   lines.push(
     "",
-    "Control commands:",
-    "  cmdproto methods list",
-    "  cmdproto methods describe <method>",
-    "  cmdproto schema export",
-    "  cmdproto invoke --json '<request>'"
+    "Command help:",
+    "  <command> --help",
+    "  <command> --help --json",
+    "",
+    "Machine control:",
+    `  ${EXECUTE_USAGE.padEnd(36)} ${EXECUTE_SUMMARY}`.trimEnd()
   );
   return `${lines.join("\n")}\n`;
 }
@@ -81,20 +87,17 @@ async function runCmdprotoCommand(
   argv: string[],
   stdin: string
 ): Promise<CliResult | undefined> {
+  // This is the one-shot stdio control surface. If we later add live streams,
+  // they should come from a persistent transport mode instead of this command.
   if (argv[0] !== "cmdproto") {
     return undefined;
   }
 
-  const payload = runCmdprotoQuery(runtime.schema, argv);
-  if (payload !== undefined) {
-    return jsonResult({ ok: true, result: payload, events: [] }, 0);
-  }
-
-  if (argv[1] === "invoke") {
+  if (argv[1] === "execute") {
     if (argv[2] !== "--json" || argv.length > 4) {
       throw new CmdProtoError(
         "INVALID_ARGUMENT",
-        "Usage: cmdproto invoke --json '<request>'"
+        `Usage: ${EXECUTE_USAGE}`
       );
     }
     const request = parseJsonRequest(argv[3] ?? stdin);
@@ -108,35 +111,73 @@ async function runCmdprotoCommand(
   );
 }
 
-function runCmdprotoQuery(schema: CmdProtoSchema, argv: string[]): JsonValue | undefined {
-  if (argv[1] === "methods" && argv[2] === "list" && argv.length === 3) {
-    return {
-      methods: schema.methods
-        .filter((method) => !method.command.hidden)
-        .map((method) => describeMethod(method, false))
-    };
+function runHelpCommand(schema: CmdProtoSchema, argv: string[]): CliResult | undefined {
+  if (argv.length === 0) {
+    return textResult(renderHelp(schema));
   }
 
-  if (argv[1] === "methods" && argv[2] === "describe" && argv.length === 4) {
-    const method = schema.methodByName.get(argv[3] ?? "");
-    if (!method) {
-      throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown method: ${argv[3]}`);
-    }
-    return describeMethod(method, true);
+  const helpRequested = argv.includes(HELP_FLAG);
+  if (!helpRequested && !(argv[0] === "cmdproto" && argv.length === 1)) {
+    return undefined;
   }
 
-  if (argv[1] === "schema" && argv[2] === "export" && argv.length === 3) {
-    return {
-      format: "file_descriptor_set.binpb.base64",
-      schema: Buffer.from(schema.descriptorBytes).toString("base64")
-    };
+  const json = helpRequested && argv.includes(JSON_FLAG);
+  const filtered = helpRequested
+    ? argv.filter((token) => token !== HELP_FLAG && token !== JSON_FLAG)
+    : argv;
+
+  if (filtered.length === 0) {
+    return json
+      ? jsonResult({ ok: true, result: buildGlobalHelpJson(schema) }, 0)
+      : textResult(renderHelp(schema));
   }
 
-  return undefined;
+  if (filtered[0] === "cmdproto") {
+    return renderCmdprotoHelp(filtered.slice(1), json);
+  }
+
+  const match = findCommand(schema.methods, filtered);
+  if (!match) {
+    throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${filtered.join(" ")}`);
+  }
+
+  return json
+    ? jsonResult({ ok: true, result: buildMethodHelpJson(match.method, true) }, 0)
+    : textResult(renderMethodHelp(match.method));
 }
 
-function describeMethod(method: MethodSpec, includeFields: boolean): JsonObject {
+function renderCmdprotoHelp(argv: string[], json: boolean): CliResult {
+  if (argv.length === 0) {
+    return json
+      ? jsonResult({ ok: true, result: buildCmdprotoIndexJson() }, 0)
+      : textResult(renderCmdprotoIndexHelp());
+  }
+
+  if (argv.length === 1 && argv[0] === "execute") {
+    return json
+      ? jsonResult({ ok: true, result: buildExecuteHelpJson() }, 0)
+      : textResult(renderExecuteHelp());
+  }
+
+  throw new CmdProtoError(
+    "INVALID_ARGUMENT",
+    `Unknown cmdproto command: ${argv.join(" ")}`
+  );
+}
+
+function buildGlobalHelpJson(schema: CmdProtoSchema): JsonObject {
   return {
+    kind: "application",
+    commands: schema.methods
+      .filter((method) => !method.command.hidden)
+      .map((method) => buildMethodHelpJson(method, false)),
+    machineControl: [buildExecuteHelpSummaryJson()]
+  };
+}
+
+function buildMethodHelpJson(method: MethodSpec, includeFields: boolean): JsonObject {
+  return {
+    kind: "command",
     method: method.name,
     service: method.serviceName,
     rpc: method.rpcName,
@@ -165,6 +206,134 @@ function describeMethod(method: MethodSpec, includeFields: boolean): JsonObject 
         }
       : {})
   };
+}
+
+function buildCmdprotoIndexJson(): JsonObject {
+  return {
+    kind: "control",
+    commands: [buildExecuteHelpSummaryJson()]
+  };
+}
+
+function buildExecuteHelpSummaryJson(): JsonObject {
+  return {
+    name: "cmdproto execute",
+    usage: EXECUTE_USAGE,
+    summary: EXECUTE_SUMMARY
+  };
+}
+
+function buildExecuteHelpJson(): JsonObject {
+  return {
+    ...buildExecuteHelpSummaryJson(),
+    request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["method"],
+      properties: {
+        method: {
+          type: "string",
+          description: "Fully-qualified RPC name."
+        },
+        params: {
+          type: "object",
+          description: "JSON input object for the RPC."
+        },
+        requestId: {
+          type: "string",
+          description: "Optional caller-provided correlation id."
+        }
+      }
+    }
+  };
+}
+
+function renderCmdprotoIndexHelp(): string {
+  const lines = [
+    "Machine control:",
+    "",
+    `  ${EXECUTE_USAGE.padEnd(36)} ${EXECUTE_SUMMARY}`.trimEnd()
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function renderExecuteHelp(): string {
+  const lines = [
+    EXECUTE_SUMMARY,
+    "",
+    "Usage:",
+    `  ${EXECUTE_USAGE}`,
+    "",
+    "Request fields:",
+    "  method       Fully-qualified RPC name.",
+    "  params       JSON input object for the RPC.",
+    "  requestId    Optional caller-provided correlation id."
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function renderMethodHelp(method: MethodSpec): string {
+  const lines = [
+    method.command.summary || method.name,
+    "",
+    "Usage:",
+    `  ${renderMethodUsage(method)}`,
+    "",
+    "Machine method:",
+    `  ${method.name}`
+  ];
+
+  if (method.command.alias.length > 0) {
+    lines.push("", "Aliases:", `  ${method.command.alias.join(", ")}`);
+  }
+
+  lines.push("", "Parameters:");
+  for (const field of getHelpFields(method)) {
+    lines.push(`  ${renderFieldHelpLabel(field).padEnd(18)} ${field.param.help}`.trimEnd());
+  }
+
+  if (method.command.example.length > 0) {
+    lines.push("", "Examples:");
+    for (const example of method.command.example) {
+      lines.push(`  ${example.command.padEnd(24)} ${example.description}`.trimEnd());
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function getHelpFields(method: MethodSpec): FieldSpec[] {
+  const positionals = method.fields
+    .filter((field) => field.param.positional && !field.param.hidden)
+    .sort(
+      (left, right) =>
+        (left.param.positional?.index ?? Number.MAX_SAFE_INTEGER) -
+        (right.param.positional?.index ?? Number.MAX_SAFE_INTEGER)
+    );
+  const flags = method.fields
+    .filter((field) => field.param.flag && !field.param.hidden)
+    .sort((left, right) => renderFieldHelpLabel(left).localeCompare(renderFieldHelpLabel(right)));
+
+  return [...positionals, ...flags];
+}
+
+function renderFieldHelpLabel(field: FieldSpec): string {
+  if (field.param.positional) {
+    return `<${field.name.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}>`;
+  }
+  const flag = field.param.flag;
+  if (!flag) {
+    return field.name;
+  }
+
+  const names = [];
+  if (flag.short) {
+    names.push(`-${flag.short}`);
+  }
+  if (flag.long) {
+    names.push(`--${flag.long}`);
+  }
+  return names.join(", ");
 }
 
 function parseJsonRequest(raw: string): unknown {
