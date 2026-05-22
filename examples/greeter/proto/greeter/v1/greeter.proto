@@ -11,8 +11,9 @@ service GreeterService {
       summary: "Render a greeting."
       alias: "hello"
       example: {
-        command: "greeter greet Ada -s"
+        command: "greet Ada -s"
         description: "Render a loud greeting."
+        request_json: "{\"method\":\"greeter.v1.GreeterService.SayHello\",\"params\":{\"name\":\"Ada\",\"shout\":true}}"
       }
     };
   }

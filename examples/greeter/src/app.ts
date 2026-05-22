@@ -4,7 +4,7 @@ import {
   createRuntimeFromFile,
   runMain,
   type HandlerMap
-} from "../../../src/index.js";
+} from "../../../runtimes/runtime.js";
 
 export const GREETER_METHOD = "greeter.v1.GreeterService.SayHello";
 export const GREETER_SCHEMA_PATH = join(

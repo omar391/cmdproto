@@ -24,6 +24,7 @@ message Command {
 message CliExample {
   string command = 1;
   string description = 2;
+  string request_json = 3;
 }
 
 message Param {

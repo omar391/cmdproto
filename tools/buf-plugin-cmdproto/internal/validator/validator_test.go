@@ -22,6 +22,10 @@ service AppService {
       path: "session create"
       alias: "session new"
       summary: "Create a session."
+      example: {
+        command: "session create checkout --profile local"
+        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"workflowRef\":\"checkout\",\"profileName\":\"local\"}}"
+      }
     };
   }
 }
@@ -67,6 +71,10 @@ service AppService {
   rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
     option (cmdproto.v1.command) = {
       path: "session create"
+      example: {
+        command: "session create checkout"
+        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"profileName\":\"local\"}}"
+      }
     };
   }
 }
@@ -114,12 +122,20 @@ service AppService {
   rpc SessionLookup(SessionLookupRequest) returns (SessionLookupResponse) {
     option (cmdproto.v1.command) = {
       path: "session"
+      example: {
+        command: "session checkout"
+        request_json: "{\"method\":\"app.v1.AppService.SessionLookup\",\"params\":{\"sessionName\":\"checkout\"}}"
+      }
     };
   }
 
   rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
     option (cmdproto.v1.command) = {
       path: "session create"
+      example: {
+        command: "session create"
+        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{}}"
+      }
     };
   }
 }
@@ -163,6 +179,10 @@ service AppService {
   rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
     option (cmdproto.v1.command) = {
       path: "session create"
+      example: {
+        command: "session create"
+        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{}}"
+      }
     };
   }
 }
@@ -185,6 +205,113 @@ message SessionCreateResponse {
 	output := runBufLintExpectFailure(t, workspace)
 	if !strings.Contains(output, "reserved long flag") || !strings.Contains(output, "--json") {
 		t.Fatalf("expected reserved json flag error, got:\n%s", output)
+	}
+}
+
+func TestBufLintRejectsMissingExamples(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
+    option (cmdproto.v1.command) = {
+      path: "session create"
+    };
+  }
+}
+
+message SessionCreateRequest {
+  string workflow_ref = 1;
+}
+
+message SessionCreateResponse {
+  string session_id = 1;
+}
+`)
+
+	output := runBufLintExpectFailure(t, workspace)
+	if !strings.Contains(output, "must declare at least one cmdproto example") {
+		t.Fatalf("expected missing example error, got:\n%s", output)
+	}
+}
+
+func TestBufLintRejectsExampleMethodMismatch(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
+    option (cmdproto.v1.command) = {
+      path: "session create"
+      example: {
+        command: "session create checkout"
+        request_json: "{\"method\":\"app.v1.AppService.SessionLookup\",\"params\":{\"workflowRef\":\"checkout\"}}"
+      }
+    };
+  }
+}
+
+message SessionCreateRequest {
+  string workflow_ref = 1;
+}
+
+message SessionCreateResponse {
+  string session_id = 1;
+}
+`)
+
+	output := runBufLintExpectFailure(t, workspace)
+	if !strings.Contains(output, "request field method must be") {
+		t.Fatalf("expected method mismatch error, got:\n%s", output)
+	}
+}
+
+func TestBufLintRejectsReservedVerboseFlag(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc SessionCreate(SessionCreateRequest) returns (SessionCreateResponse) {
+    option (cmdproto.v1.command) = {
+      path: "session create"
+      example: {
+        command: "session create checkout"
+        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"output\":\"wide\"}}"
+      }
+    };
+  }
+}
+
+message SessionCreateRequest {
+  string output = 1 [
+    (cmdproto.v1.param) = {
+      flag: {
+        long: "verbose"
+      }
+    }
+  ];
+}
+
+message SessionCreateResponse {
+  string session_id = 1;
+}
+`)
+
+	output := runBufLintExpectFailure(t, workspace)
+	if !strings.Contains(output, "reserved long flag") || !strings.Contains(output, "--verbose") {
+		t.Fatalf("expected reserved verbose flag error, got:\n%s", output)
 	}
 }
 

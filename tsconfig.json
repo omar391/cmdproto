@@ -12,6 +12,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "examples/**/*.ts", "tests/**/*.ts"]
+  "include": ["runtimes/**/*.ts", "examples/**/*.ts", "tests/**/*.ts"]
 }
-

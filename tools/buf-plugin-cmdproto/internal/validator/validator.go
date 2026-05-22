@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -24,7 +25,7 @@ var (
 	longFlagRe           = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	shortFlagRe          = regexp.MustCompile(`^[A-Za-z0-9]$`)
 	reservedCommandRoots = map[string]struct{}{"cmdproto": {}}
-	reservedLongFlags    = map[string]struct{}{"help": {}, "json": {}}
+	reservedLongFlags    = map[string]struct{}{"help": {}, "json": {}, "verbose": {}}
 	reservedShortFlags   = map[string]struct{}{"h": {}}
 )
 
@@ -47,8 +48,14 @@ type commandBinding struct {
 }
 
 type commandOptions struct {
-	path    string
-	aliases []string
+	path     string
+	aliases  []string
+	examples []cliExample
+}
+
+type cliExample struct {
+	command     string
+	requestJSON string
 }
 
 type paramOptions struct {
@@ -94,6 +101,7 @@ func Validate(files []descriptor.FileDescriptor) []Issue {
 				command := readCommandOptions(commandMessage)
 				positionalCount, fieldIssues := validateMethodFields(method, registry)
 				issues = append(issues, fieldIssues...)
+				issues = append(issues, validateCommandExamples(method, command)...)
 
 				for _, binding := range collectCommandBindings(method, command, positionalCount, &issues) {
 					existing, ok := seenCommands[binding.key]
@@ -244,9 +252,19 @@ func getExtensionMessage(
 }
 
 func readCommandOptions(message protoreflect.Message) commandOptions {
+	exampleMessages := getMessageListField(message, "example")
+	examples := make([]cliExample, 0, len(exampleMessages))
+	for _, exampleMessage := range exampleMessages {
+		examples = append(examples, cliExample{
+			command:     getStringField(exampleMessage, "command"),
+			requestJSON: getStringField(exampleMessage, "request_json"),
+		})
+	}
+
 	return commandOptions{
-		path:    getStringField(message, "path"),
-		aliases: getStringListField(message, "alias"),
+		path:     getStringField(message, "path"),
+		aliases:  getStringListField(message, "alias"),
+		examples: examples,
 	}
 }
 
@@ -291,6 +309,23 @@ func getStringListField(message protoreflect.Message, fieldName protoreflect.Nam
 	values := make([]string, 0, list.Len())
 	for index := 0; index < list.Len(); index += 1 {
 		values = append(values, list.Get(index).String())
+	}
+	return values
+}
+
+func getMessageListField(
+	message protoreflect.Message,
+	fieldName protoreflect.Name,
+) []protoreflect.Message {
+	field := message.Descriptor().Fields().ByName(fieldName)
+	if field == nil {
+		return nil
+	}
+
+	list := message.Get(field).List()
+	values := make([]protoreflect.Message, 0, list.Len())
+	for index := 0; index < list.Len(); index += 1 {
+		values = append(values, list.Get(index).Message())
 	}
 	return values
 }
@@ -477,6 +512,55 @@ func validateMethodFields(
 	return len(indices), issues
 }
 
+func validateCommandExamples(
+	method protoreflect.MethodDescriptor,
+	command commandOptions,
+) []Issue {
+	issues := make([]Issue, 0)
+	if len(command.examples) == 0 {
+		return append(issues, Issue{
+			Descriptor: method,
+			Message:    string(method.FullName()) + " must declare at least one cmdproto example",
+		})
+	}
+
+	for _, example := range command.examples {
+		commandText := strings.TrimSpace(example.command)
+		if commandText == "" {
+			issues = append(issues, Issue{
+				Descriptor: method,
+				Message:    string(method.FullName()) + " has a cmdproto example with an empty command",
+			})
+			continue
+		}
+
+		if !exampleMatchesCommandBinding(commandText, command) {
+			issues = append(issues, Issue{
+				Descriptor: method,
+				Message:    string(method.FullName()) + " example \"" + commandText + "\" must start with the command path or an alias",
+			})
+		}
+
+		requestJSON := strings.TrimSpace(example.requestJSON)
+		if requestJSON == "" {
+			issues = append(issues, Issue{
+				Descriptor: method,
+				Message:    string(method.FullName()) + " example \"" + commandText + "\" is missing request_json",
+			})
+			continue
+		}
+
+		if err := validateExampleRequestJSON(method, requestJSON); err != nil {
+			issues = append(issues, Issue{
+				Descriptor: method,
+				Message:    string(method.FullName()) + " example \"" + commandText + "\" has invalid request_json: " + err.Error(),
+			})
+		}
+	}
+
+	return issues
+}
+
 func registerFlag(
 	seenFlags map[string]string,
 	method protoreflect.MethodDescriptor,
@@ -536,6 +620,65 @@ func registerFlag(
 	seenFlags[key] = string(field.Name())
 }
 
+func exampleMatchesCommandBinding(commandText string, command commandOptions) bool {
+	tokens := splitCommandPath(commandText)
+	if len(tokens) == 0 {
+		return false
+	}
+
+	for _, rawPath := range append([]string{command.path}, command.aliases...) {
+		bindingTokens := splitCommandPath(rawPath)
+		if startsWithTokens(tokens, bindingTokens) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateExampleRequestJSON(
+	method protoreflect.MethodDescriptor,
+	requestJSON string,
+) error {
+	var request map[string]any
+	if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
+		return err
+	}
+
+	for key := range request {
+		switch key {
+		case "method", "params", "requestId":
+		default:
+			return fmt.Errorf("unknown request field: %s", key)
+		}
+	}
+
+	methodValue, ok := request["method"].(string)
+	if !ok || strings.TrimSpace(methodValue) == "" {
+		return fmt.Errorf("request field method must be a non-empty string")
+	}
+	if methodValue != string(method.FullName()) {
+		return fmt.Errorf("request field method must be %q", string(method.FullName()))
+	}
+
+	if requestID, ok := request["requestId"]; ok {
+		if _, ok := requestID.(string); !ok {
+			return fmt.Errorf("request field requestId must be a string")
+		}
+	}
+
+	if params, ok := request["params"]; ok {
+		if params == nil {
+			return nil
+		}
+		if _, ok := params.(map[string]any); !ok {
+			return fmt.Errorf("request field params must be an object")
+		}
+	}
+
+	return nil
+}
+
 func validatePrefixShadowing(
 	shorter commandBinding,
 	longer commandBinding,
@@ -592,6 +735,18 @@ func normalizeCommandPath(path string) string {
 
 func splitCommandPath(path string) []string {
 	return strings.Fields(strings.TrimSpace(path))
+}
+
+func startsWithTokens(tokens []string, prefix []string) bool {
+	if len(tokens) < len(prefix) {
+		return false
+	}
+	for index, token := range prefix {
+		if tokens[index] != token {
+			return false
+		}
+	}
+	return true
 }
 
 func isPrefix(prefix []string, tokens []string) bool {

@@ -11,7 +11,7 @@ import {
   type FieldSpec,
   type MethodSpec,
   type ParamOptions
-} from "../src/index.js";
+} from "../runtimes/runtime.js";
 import {
   createGreeterRuntime,
   GREETER_SCHEMA_PATH,
@@ -37,6 +37,11 @@ describe("cmdproto descriptors", () => {
     assert.equal(method.command.path, "greet");
     assert.equal(method.command.summary, "Render a greeting.");
     assert.deepEqual(method.command.alias, ["hello"]);
+    assert.equal(method.command.example[0]?.command, "greet Ada -s");
+    assert.equal(
+      method.command.example[0]?.requestJson,
+      "{\"method\":\"greeter.v1.GreeterService.SayHello\",\"params\":{\"name\":\"Ada\",\"shout\":true}}"
+    );
     assert.equal(method.fields.find((field) => field.name === "name")?.param.positional?.index, 1);
     assert.equal(method.fields.find((field) => field.name === "shout")?.param.flag?.long, "shout");
     assert.equal(method.fields.find((field) => field.name === "shout")?.param.flag?.short, "s");
@@ -146,22 +151,32 @@ describe("cmdproto runtime", () => {
     const commandJson = parseStdout(
       (await runCli(runtime, ["greet", "--help", "--json"])).stdout
     );
+    const verboseCommandJson = parseStdout(
+      (await runCli(runtime, ["greet", "--help", "--json", "--verbose"])).stdout
+    );
     const controlJson = parseStdout(
       (await runCli(runtime, ["cmdproto", "--help", "--json"])).stdout
     );
 
     assert.match(help, /greet <NAME> \[-s, --shout\]\s+Render a greeting\./);
+    assert.match(help, /--json --verbose/);
     assert.match(help, /cmdproto execute --json/);
-    assert.equal(globalJson.ok, true);
-    assert.equal(globalJson.result.commands[0].method, GREETER_METHOD);
+    assert.equal(globalJson.commands[0].method, GREETER_METHOD);
     assert.match(commandHelp.stdout, /Usage:\n  greet <NAME> \[-s, --shout\]/);
     assert.match(commandHelp.stdout, /Machine method:\n  greeter\.v1\.GreeterService\.SayHello/);
-    assert.equal(commandJson.ok, true);
-    assert.equal(commandJson.result.fields[0].name, "name");
-    assert.equal(commandJson.result.fields[1].shortFlag, "s");
-    assert.equal(commandJson.result.examples[0].command, "greeter greet Ada -s");
-    assert.equal(controlJson.ok, true);
-    assert.equal(controlJson.result.commands[0].name, "cmdproto execute");
+    assert.equal(commandJson.method, GREETER_METHOD);
+    assert.equal(commandJson.fields.name.positionalIndex, 1);
+    assert.equal(commandJson.fields.shout.shortFlag, "s");
+    assert.equal(commandJson.fields.shout.longFlag, "shout");
+    assert.ok(!("longFlag" in commandJson.fields.name));
+    assert.equal(commandJson.examples[0].cmd, "greet Ada -s");
+    assert.equal(commandJson.examples[0].json.method, GREETER_METHOD);
+    assert.equal(commandJson.examples[0].json.params.shout, true);
+    assert.equal(verboseCommandJson.ok, true);
+    assert.equal(verboseCommandJson.result.fields[1].shortFlag, "s");
+    assert.equal(verboseCommandJson.result.examples[0].command, "greet Ada -s");
+    assert.equal(verboseCommandJson.result.examples[0].json.method, GREETER_METHOD);
+    assert.equal(controlJson.commands[0].name, "cmdproto execute");
   });
 
   it("returns a stable machine-parseable error envelope", async () => {
@@ -220,11 +235,54 @@ describe("cmdproto schema validation", () => {
       /reserved long flag "--json"/
     );
   });
+
+  it("rejects missing command examples", () => {
+    const method = mockMethod("session create", [mockField("name", { positional: { index: 1 } })], {
+      example: []
+    });
+
+    assert.throws(
+      () => validateMethodSpecs([method]),
+      /must declare at least one cmdproto example/
+    );
+  });
+
+  it("rejects missing request_json in command examples", () => {
+    const method = mockMethod("session create", [mockField("name", { positional: { index: 1 } })], {
+      example: [
+        {
+          command: "session create demo",
+          description: "test",
+          requestJson: ""
+        }
+      ]
+    });
+
+    assert.throws(
+      () => validateMethodSpecs([method]),
+      /missing request_json/
+    );
+  });
+
+  it("rejects reserved verbose long flags", () => {
+    const method = mockMethod("session create", [
+      mockField("output", { flag: { long: "verbose", short: "v" } })
+    ]);
+
+    assert.throws(
+      () => validateMethodSpecs([method]),
+      /reserved long flag "--verbose"/
+    );
+  });
 });
 
-function mockMethod(path: string, fields: FieldSpec[]): MethodSpec {
+function mockMethod(
+  path: string,
+  fields: FieldSpec[],
+  command: Partial<MethodSpec["command"]> = {}
+): MethodSpec {
   return {
-    name: `test.v1.TestService.${path.replace(/\s+/g, "_")}`,
+    name: "test.v1.TestService.Call",
     serviceName: "test.v1.TestService",
     rpcName: "Call",
     input: {} as MethodSpec["input"],
@@ -234,9 +292,16 @@ function mockMethod(path: string, fields: FieldSpec[]): MethodSpec {
       path,
       summary: "test",
       alias: [],
-      example: [],
+      example: [
+        {
+          command: path,
+          description: "test",
+          requestJson: "{\"method\":\"test.v1.TestService.Call\",\"params\":{}}"
+        }
+      ],
       hidden: false,
-      deprecated: false
+      deprecated: false,
+      ...command
     },
     fields
   };
