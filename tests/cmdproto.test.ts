@@ -163,9 +163,8 @@ describe("cmdproto runtime", () => {
       (await runCli(runtime, ["--help", "--json"])).stdout
     );
     const commandHelp = await runCli(runtime, ["greet", "--help"]);
-    const commandJson = parseStdout(
-      (await runCli(runtime, ["greet", "--help", "--json"])).stdout
-    );
+    const commandJsonStdout = (await runCli(runtime, ["greet", "--help", "--json"])).stdout;
+    const commandJson = parseStdout(commandJsonStdout);
     const controlJson = parseStdout(
       (await runCli(runtime, ["cmdproto", "--help", "--json"])).stdout
     );
@@ -195,6 +194,11 @@ describe("cmdproto runtime", () => {
     assert.ok(!("shortFlag" in commandJson.payload_schema.shout));
     assert.equal(commandJson.examples[0].description, "Render a loud greeting.");
     assert.equal(commandJson.examples[0].cmd, GREETER_EXECUTE_CMD);
+    assert.ok(
+      commandJsonStdout.indexOf('"payload_schema"') <
+        commandJsonStdout.indexOf('"examples"'),
+      "help JSON should render payload_schema before examples"
+    );
     assert.equal(controlJson.execute.name, "cmdproto execute");
   });
 

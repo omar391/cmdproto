@@ -1757,7 +1757,7 @@ func buildExecuteHelpSummaryJSON() map[string]any {
 	}
 }
 
-func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) map[string]any {
+func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) any {
 	payloadSchema := make(map[string]any)
 	for _, param := range command.GetParams() {
 		if param.GetHidden() {
@@ -1781,9 +1781,12 @@ func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) map[string]any {
 		}
 		examples = append(examples, entry)
 	}
-	return map[string]any{
-		"payload_schema": payloadSchema,
-		"examples":       examples,
+	return struct {
+		PayloadSchema map[string]any   `json:"payload_schema"`
+		Examples      []map[string]any `json:"examples"`
+	}{
+		PayloadSchema: payloadSchema,
+		Examples:      examples,
 	}
 }
 
