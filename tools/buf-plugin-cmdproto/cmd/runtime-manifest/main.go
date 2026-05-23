@@ -4,21 +4,25 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"cmdproto.tools/buf-plugin-cmdproto/internal/compiler"
 	"google.golang.org/protobuf/proto"
 )
 
 func main() {
+	var appName string
 	var schemaPath string
 	var outPath string
 
+	flag.StringVar(&appName, "app-name", "", "App name to prefix rendered examples")
 	flag.StringVar(&schemaPath, "schema", "", "Path to schema.binpb")
 	flag.StringVar(&outPath, "out", "", "Path to write runtime.binpb")
 	flag.Parse()
 
-	if schemaPath == "" || outPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: runtime-manifest --schema <schema.binpb> --out <runtime.binpb>")
+	appName = strings.TrimSpace(appName)
+	if appName == "" || schemaPath == "" || outPath == "" {
+		fmt.Fprintln(os.Stderr, "usage: runtime-manifest --app-name <name> --schema <schema.binpb> --out <runtime.binpb>")
 		os.Exit(2)
 	}
 
@@ -28,7 +32,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	manifest, issues, err := compiler.CompileDescriptorSetBytes(schemaBytes)
+	manifest, issues, err := compiler.CompileDescriptorSetBytes(schemaBytes, appName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compile manifest: %v\n", err)
 		os.Exit(1)

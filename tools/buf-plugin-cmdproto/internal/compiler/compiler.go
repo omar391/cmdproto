@@ -133,7 +133,7 @@ func ValidateFiles(files []protoreflect.FileDescriptor) []Issue {
 	return issues
 }
 
-func CompileDescriptorSetBytes(schemaBytes []byte) (*cmdprotov1.RuntimeManifest, []Issue, error) {
+func CompileDescriptorSetBytes(schemaBytes []byte, appName string) (*cmdprotov1.RuntimeManifest, []Issue, error) {
 	set := &descriptorpb.FileDescriptorSet{}
 	if err := proto.Unmarshal(schemaBytes, set); err != nil {
 		return nil, nil, fmt.Errorf("decode schema.binpb: %w", err)
@@ -148,13 +148,13 @@ func CompileDescriptorSetBytes(schemaBytes []byte) (*cmdprotov1.RuntimeManifest,
 		return nil, nil, err
 	}
 	if ctx.ext == nil {
-		return buildManifest(nil, nil, descriptorHash(schemaBytes))
+		return buildManifest(nil, nil, descriptorHash(schemaBytes), appName)
 	}
 	methods, issues := analyzeMethods(ctx, files)
 	if len(issues) > 0 {
 		return nil, issues, nil
 	}
-	return buildManifest(methods, ctx, descriptorHash(schemaBytes))
+	return buildManifest(methods, ctx, descriptorHash(schemaBytes), appName)
 }
 
 func firstFileDescriptor(files []protoreflect.FileDescriptor) protoreflect.Descriptor {
@@ -1228,7 +1228,12 @@ func renderPreferredFlag(field *fieldSpec) string {
 	return "-" + field.param.flag.short
 }
 
-func buildManifest(methods []*methodSpec, ctx *schemaContext, descriptorHash string) (*cmdprotov1.RuntimeManifest, []Issue, error) {
+func buildManifest(
+	methods []*methodSpec,
+	ctx *schemaContext,
+	descriptorHash string,
+	appName string,
+) (*cmdprotov1.RuntimeManifest, []Issue, error) {
 	sorted := slices.Clone(methods)
 	slices.SortFunc(sorted, func(left, right *methodSpec) int {
 		if cmp := strings.Compare(normalizeCommandPath(left.command.path), normalizeCommandPath(right.command.path)); cmp != 0 {
@@ -1269,12 +1274,12 @@ func buildManifest(methods []*methodSpec, ctx *schemaContext, descriptorHash str
 				return nil, nil, err
 			}
 			payloads = append(payloads, compiledExample{
-				humanCommand: example.command,
+				humanCommand: renderAppHumanCommand(appName, example.command),
 				description:  example.description,
 				payloadJSON:  canonical,
 			})
 		}
-		command := buildRuntimeCommand(method, payloads)
+		command := buildRuntimeCommand(method, payloads, appName)
 		commands = append(commands, command)
 	}
 	manifest.SetCommands(commands)
@@ -1306,7 +1311,11 @@ func compileExamplePayload(
 	return validateExampleRequestJSON(method, requestJSON, ctx)
 }
 
-func buildRuntimeCommand(method *methodSpec, examples []compiledExample) *cmdprotov1.RuntimeCommand {
+func buildRuntimeCommand(
+	method *methodSpec,
+	examples []compiledExample,
+	appName string,
+) *cmdprotov1.RuntimeCommand {
 	command := &cmdprotov1.RuntimeCommand{}
 	command.SetMethod(method.name)
 	command.SetService(method.service)
@@ -1329,7 +1338,9 @@ func buildRuntimeCommand(method *methodSpec, examples []compiledExample) *cmdpro
 		runtimeExample := &cmdprotov1.RuntimeExample{}
 		runtimeExample.SetDescription(example.description)
 		runtimeExample.SetHumanCommand(example.humanCommand)
-		runtimeExample.SetMachineCommand(renderExecuteExampleCommand(command.GetPreferredMachinePath(), example.payloadJSON))
+		runtimeExample.SetMachineCommand(
+			renderAppExecuteExampleCommand(appName, command.GetPreferredMachinePath(), example.payloadJSON),
+		)
 		runtimeExample.SetPayloadJson(example.payloadJSON)
 		commandExamples = append(commandExamples, runtimeExample)
 	}
@@ -1531,8 +1542,20 @@ func renderExecuteTemplate(method *methodSpec) string {
 	return "cmdproto execute " + preferredMachinePath(method) + " --json '<payload>'"
 }
 
-func renderExecuteExampleCommand(path string, payloadJSON string) string {
-	return "cmdproto execute " + path + " --json " + quoteShellArgument(payloadJSON)
+func renderAppHumanCommand(appName, command string) string {
+	command = normalizeCommandPath(command)
+	if appName == "" {
+		return command
+	}
+	return normalizeCommandPath(appName + " " + command)
+}
+
+func renderAppExecuteExampleCommand(appName, path string, payloadJSON string) string {
+	command := "cmdproto execute " + path + " --json " + quoteShellArgument(payloadJSON)
+	if appName == "" {
+		return command
+	}
+	return strings.TrimSpace(appName + " " + command)
 }
 
 func quoteShellArgument(value string) string {

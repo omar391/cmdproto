@@ -36,10 +36,10 @@ manifest-driven CLI and JSON execution surface backed by protobuf descriptors.
 - Structured help: `app greet --help --json`
 - Machine CLI: `app cmdproto execute greet --json '{"name":"Ada","shout":true}'`
 
-Default structured help is intentionally lean:
+Default structured help is intentionally lean and uses the manifest app name:
 
 ```json
-{"payload_schema":{"name":{"type":"string","help":"Name to greet."},"shout":{"type":"boolean","help":"Uppercase the greeting."}},"examples":[{"cmd":"cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'","description":"Render a loud greeting."}]}
+{"payload_schema":{"name":{"type":"string","help":"Name to greet."},"shout":{"type":"boolean","help":"Uppercase the greeting."}},"examples":[{"cmd":"greeter cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'","description":"Render a loud greeting."}]}
 ```
 
 `--help` carries the richer human-facing details: the fully-qualified RPC name,

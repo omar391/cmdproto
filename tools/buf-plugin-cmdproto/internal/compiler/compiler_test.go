@@ -67,7 +67,7 @@ message GreetResponse {
 		t.Fatalf("read schema.binpb: %v", err)
 	}
 
-	manifest, issues, err := CompileDescriptorSetBytes(schemaBytes)
+	manifest, issues, err := CompileDescriptorSetBytes(schemaBytes, "greeter")
 	if err != nil {
 		t.Fatalf("compile manifest: %v", err)
 	}
@@ -106,6 +106,12 @@ message GreetResponse {
 	}
 	if got, want := commandManifest.GetExamples()[0].GetPayloadJson(), "{\"name\":\"Ada\",\"shout\":true}"; got != want {
 		t.Fatalf("payload json = %q, want %q", got, want)
+	}
+	if got, want := commandManifest.GetExamples()[0].GetHumanCommand(), "greeter greet Ada -s"; got != want {
+		t.Fatalf("human command = %q, want %q", got, want)
+	}
+	if got, want := commandManifest.GetExamples()[0].GetMachineCommand(), "greeter cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'"; got != want {
+		t.Fatalf("machine command = %q, want %q", got, want)
 	}
 
 	if got, want := commandManifest.GetParsePlan().GetPositionalJsonNames()[0], "name"; got != want {

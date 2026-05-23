@@ -21,7 +21,7 @@ import {
 const SCHEMA_PATH = GREETER_SCHEMA_PATH;
 const GREETER_REQUEST_JSON = "{\"name\":\"Ada\",\"shout\":true}";
 const GREETER_EXECUTE_CMD =
-  `cmdproto execute greet --json '${GREETER_REQUEST_JSON}'`;
+  `greeter cmdproto execute greet --json '${GREETER_REQUEST_JSON}'`;
 
 before(() => {
   execFileSync("npm", ["run", "schema:build"], { stdio: "ignore" });
@@ -183,7 +183,7 @@ describe("cmdproto runtime", () => {
     assert.match(commandHelp.stdout, /<NAME>\s+name\s+1\s+string\s+Name to greet\./);
     assert.match(commandHelp.stdout, /-s, --shout\s+shout\s+-\s+boolean\s+Uppercase the greeting\./);
     assert.match(commandHelp.stdout, /Examples:\n  Description\s+Normal cmd\s+JSON cmd/);
-    assert.match(commandHelp.stdout, /Render a loud greeting\.\s+greet Ada -s\s+cmdproto execute greet --json '\{"name":"Ada","shout":true\}'/);
+    assert.match(commandHelp.stdout, /Render a loud greeting\.\s+greeter greet Ada -s\s+greeter cmdproto execute greet --json '\{"name":"Ada","shout":true\}'/);
     assert.ok(!("method" in commandJson));
     assert.equal(commandJson.payload_schema.name.type, "string");
     assert.equal(commandJson.payload_schema.shout.type, "boolean");
