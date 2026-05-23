@@ -13,7 +13,7 @@ service GreeterService {
       example: {
         command: "greet Ada -s"
         description: "Render a loud greeting."
-        request_json: "{\"method\":\"greeter.v1.GreeterService.SayHello\",\"params\":{\"name\":\"Ada\",\"shout\":true}}"
+        request_json: "{\"name\":\"Ada\",\"shout\":true}"
       }
     };
   }

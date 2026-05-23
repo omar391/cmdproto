@@ -14,8 +14,8 @@
     }
   },
   "scripts": {
-    "schema:build": "buf lint proto && mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb",
-    "schema:build:greeter": "buf lint examples/greeter/proto && mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb",
+    "schema:build": "buf lint proto && mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb && cd tools/buf-plugin-cmdproto && go run ./cmd/runtime-manifest --schema ../../dist/schema.binpb --out ../../dist/runtime.binpb",
+    "schema:build:greeter": "buf lint examples/greeter/proto && mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && cd tools/buf-plugin-cmdproto && go run ./cmd/runtime-manifest --schema ../../examples/greeter/dist/schema.binpb --out ../../examples/greeter/dist/runtime.binpb",
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:plugin": "cd tools/buf-plugin-cmdproto && go test ./...",

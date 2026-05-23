@@ -17,7 +17,7 @@ AI apps need tools, and tool calls need contracts.
 
 - what a tool is called
 - how a human runs it
-- what JSON an assistant should send
+- what JSON payload an assistant should send
 - what minimal example proves the call shape
 
 That same command ABI can later back other adapters too:
@@ -27,49 +27,24 @@ That same command ABI can later back other adapters too:
 - live event streaming over stdio, gRPC, or WebSocket
 
 Those adapters are future work, not implemented in V1. Today V1 is a strict
-descriptor-driven CLI and JSON execution surface.
+manifest-driven CLI and JSON execution surface backed by protobuf descriptors.
 
 ## V1 Shape
 
 - Human CLI: `app greet Ada -s`
 - Command help: `app greet --help`
 - Structured help: `app greet --help --json`
-- Verbose structured help: `app greet --help --json --verbose`
-- Machine CLI: `app cmdproto execute --json '{"method":"greeter.v1.GreeterService.SayHello","params":{"name":"Ada","shout":true}}'`
+- Machine CLI: `app cmdproto execute greet --json '{"name":"Ada","shout":true}'`
 
 Default structured help is intentionally lean:
 
 ```json
-{
-  "method": "greeter.v1.GreeterService.SayHello",
-  "fields": {
-    "name": {
-      "positionalIndex": 1,
-      "help": "Name to greet."
-    },
-    "shout": {
-      "longFlag": "shout",
-      "shortFlag": "s",
-      "help": "Uppercase the greeting."
-    }
-  },
-  "examples": [
-    {
-      "cmd": "greet Ada -s",
-      "json": {
-        "method": "greeter.v1.GreeterService.SayHello",
-        "params": {
-          "name": "Ada",
-          "shout": true
-        }
-      }
-    }
-  ]
-}
+{"payload_schema":{"name":{"type":"string","help":"Name to greet."},"shout":{"type":"boolean","help":"Uppercase the greeting."}},"examples":[{"description":"Render a loud greeting.","cmd":"cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'"}]}
 ```
 
-`--json --verbose` returns the richer descriptor-oriented view for callers that
-want service, RPC, input/output type names, and the older field-array shape.
+`--help` carries the richer human-facing details: the fully-qualified RPC name,
+CLI/JSON parameter mapping, input/output type names, and both human and machine
+examples.
 
 There is no separate `describe` command in V1. Structured help hangs off the
 same per-command `--help` surface that humans use.
@@ -99,7 +74,7 @@ service GreeterService {
       example: {
         command: "greet Ada -s"
         description: "Render a loud greeting."
-        request_json: "{\"method\":\"greeter.v1.GreeterService.SayHello\",\"params\":{\"name\":\"Ada\",\"shout\":true}}"
+        request_json: "{\"name\":\"Ada\",\"shout\":true}"
       }
     };
   }
@@ -152,33 +127,33 @@ await runMain({ handlers });
 2. Lint and build a descriptor set, for example:
 
 ```sh
-buf lint examples/greeter/proto
-buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb
+npm run schema:build:greeter
 ```
 
 3. `buf lint` runs both Buf's built-in lint rules and the local `cmdproto`
    check plugin. That catches duplicate command paths, alias collisions,
-   duplicate flags, reserved meta flags like `--help`, `--json`, and
-   `--verbose`, invalid positional layouts, prefix-shadowing, and missing or
-   malformed command examples during schema authoring.
+   duplicate flags, reserved meta flags like `--help` and `--json`, invalid
+   positional layouts, prefix-shadowing, and missing or malformed command
+   examples during schema authoring.
 4. Buf compiles your `.proto` files into `schema.binpb`, which is a protobuf
-   `FileDescriptorSet`.
-5. `cmdproto` loads that descriptor set at runtime. The main schema gate is
-   still `buf lint`; the runtime re-validates live request and response JSON as
-   a fail-closed safety net in case a descriptor artifact is stale, hand-built,
-   or the caller/handler sends malformed data.
+   `FileDescriptorSet`, and the shared Go compiler emits a normalized
+   `runtime.binpb` manifest beside it.
+5. `cmdproto` loads both artifacts at runtime. The manifest drives command
+   routing, help output, and human CLI parsing; the descriptor set is only used
+   for protobuf JSON validation and type reflection.
 6. Register handlers and use the app through human commands, `--help`, or
-   `cmdproto execute --json`.
+   `cmdproto execute <path> --json`.
 
-`schema.binpb` is the compiled descriptor artifact that `cmdproto` consumes at
-runtime. We do not read raw `.proto` text in the app process. `dist/` is only
-the default location, not a hard requirement; for example,
-`runMain({ handlers, schemaPath: "/some/other/schema.binpb" })` works too.
+`schema.binpb` and `runtime.binpb` are the compiled runtime artifacts that
+`cmdproto` consumes. We do not read raw `.proto` text in the app process.
+`dist/` is only the default location, not a hard requirement; for example,
+`runMain({ handlers, schemaPath: "/some/other/schema.binpb", manifestPath: "/some/other/runtime.binpb" })`
+works too.
 
 In this repo specifically:
 
-- `npm run schema:build` builds the library's own `proto/` schema to `dist/schema.binpb`.
-- `npm run schema:build:greeter` builds the example app schema to `examples/greeter/dist/schema.binpb`.
+- `npm run schema:build` builds the library's own `proto/` schema to `dist/schema.binpb` and `dist/runtime.binpb`.
+- `npm run schema:build:greeter` builds the example app schema to `examples/greeter/dist/schema.binpb` and `examples/greeter/dist/runtime.binpb`.
 - `npm run example:greeter -- greet Ada -s` uses the example-owned schema file, not the root one.
 - `buf lint` requires Go locally because the repo-local plugin launcher runs `go run ./tools/buf-plugin-cmdproto/...`.
 
@@ -193,6 +168,5 @@ npm run schema:build:greeter
 npm run example:greeter -- greet Ada -s
 npm run example:greeter -- greet --help
 npm run example:greeter -- greet --help --json
-npm run example:greeter -- greet --help --json --verbose
-npm run example:greeter -- cmdproto execute --json '{"method":"greeter.v1.GreeterService.SayHello","params":{"name":"Ada","shout":true}}'
+npm run example:greeter -- cmdproto execute greet --json '{"name":"Ada","shout":true}'
 ```

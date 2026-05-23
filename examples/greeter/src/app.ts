@@ -11,6 +11,10 @@ export const GREETER_SCHEMA_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "../dist/schema.binpb"
 );
+export const GREETER_MANIFEST_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../dist/runtime.binpb"
+);
 
 export const handlers: HandlerMap = {
   [GREETER_METHOD](params) {
@@ -22,10 +26,17 @@ export const handlers: HandlerMap = {
   }
 };
 
-export function createGreeterRuntime(schemaPath = GREETER_SCHEMA_PATH) {
-  return createRuntimeFromFile(handlers, schemaPath);
+export function createGreeterRuntime(
+  schemaPath = GREETER_SCHEMA_PATH,
+  manifestPath = GREETER_MANIFEST_PATH
+) {
+  return createRuntimeFromFile(handlers, schemaPath, manifestPath);
 }
 
 if (process.argv[1] && process.argv[1].endsWith("app.ts")) {
-  await runMain({ handlers, schemaPath: GREETER_SCHEMA_PATH });
+  await runMain({
+    handlers,
+    schemaPath: GREETER_SCHEMA_PATH,
+    manifestPath: GREETER_MANIFEST_PATH
+  });
 }

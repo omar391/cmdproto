@@ -1,0 +1,143 @@
+edition = "2024";
+
+package cmdproto.v1;
+
+option go_package = "cmdproto.tools/buf-plugin-cmdproto/internal/gen/cmdproto/v1;cmdprotov1";
+
+// Generated runtime manifest for cmdproto.
+//
+// App authors write cmdproto annotations in options.proto. A compiler then
+// consumes schema.binpb, validates those annotations once, and emits
+// runtime.binpb in this normalized operational format. Language runtimes should
+// consume runtime.binpb for command routing, help, and CLI parsing, and keep
+// schema.binpb only for protobuf JSON validation and type reflection.
+message RuntimeManifest {
+  uint32 manifest_version = 1;
+  uint32 help_json_version = 2;
+  string descriptor_set_sha256 = 3;
+
+  RuntimeExecute execute = 4;
+  RuntimeHelpSurface root_help = 5;
+  RuntimeHelpSurface control_help = 6;
+  repeated RuntimeCommand commands = 7;
+}
+
+message RuntimeExecute {
+  string name = 1;
+  string usage = 2;
+  string summary = 3;
+  RuntimeHelpSurface help = 4;
+}
+
+message RuntimeHelpSurface {
+  string text = 1;
+  string json = 2;
+}
+
+message RuntimeCommand {
+  string method = 1;
+  string service = 2;
+  string rpc = 3;
+  string input_type = 4;
+  string output_type = 5;
+  string canonical_path = 6;
+  repeated string aliases = 7;
+  string preferred_machine_path = 8;
+  repeated string bindings = 9;
+  string summary = 10;
+  string usage = 11;
+  string machine_usage = 12;
+  repeated RuntimeParam params = 13;
+  repeated RuntimeExample examples = 14;
+  RuntimeParsePlan parse_plan = 15;
+  RuntimeHelpSurface help = 16;
+  bool hidden = 17;
+  bool deprecated = 18;
+}
+
+message RuntimeParam {
+  string proto_name = 1;
+  string json_name = 2;
+  uint32 field_number = 3;
+  RuntimeJsonType json_type = 4;
+  string cli_label = 5;
+  string position_label = 6;
+  string description = 7;
+  bool hidden = 8;
+  uint32 positional_index = 9;
+  string long_flag = 10;
+  string short_flag = 11;
+}
+
+message RuntimeExample {
+  string description = 1;
+  string human_command = 2;
+  string machine_command = 3;
+  string payload_json = 4;
+}
+
+message RuntimeParsePlan {
+  repeated string positional_json_names = 1;
+  repeated RuntimeFlagBinding flags = 2;
+}
+
+message RuntimeFlagBinding {
+  string token = 1;
+  string json_name = 2;
+  RuntimeFlagValueMode value_mode = 3;
+  bool repeated = 4;
+}
+
+enum RuntimeFlagValueMode {
+  RUNTIME_FLAG_VALUE_MODE_UNSPECIFIED = 0;
+  RUNTIME_FLAG_VALUE_MODE_REQUIRED = 1;
+  RUNTIME_FLAG_VALUE_MODE_BOOLEAN_OPTIONAL = 2;
+}
+
+message RuntimeJsonType {
+  RuntimeJsonTypeKind kind = 1;
+  RuntimeJsonTypeKind element_kind = 2;
+  string display_name = 3;
+}
+
+enum RuntimeJsonTypeKind {
+  RUNTIME_JSON_TYPE_KIND_UNSPECIFIED = 0;
+  RUNTIME_JSON_TYPE_KIND_STRING = 1;
+  RUNTIME_JSON_TYPE_KIND_BOOLEAN = 2;
+  RUNTIME_JSON_TYPE_KIND_NUMBER = 3;
+  RUNTIME_JSON_TYPE_KIND_OBJECT = 4;
+  RUNTIME_JSON_TYPE_KIND_ARRAY = 5;
+}
+
+// Public compact `--help --json` response for the application root.
+message CompactHelpIndex {
+  repeated CompactHelpCommandSummary commands = 1;
+  CompactHelpExecute execute = 2;
+}
+
+message CompactHelpExecute {
+  string name = 1;
+  string usage = 2;
+  string summary = 3;
+}
+
+message CompactHelpCommandSummary {
+  string path = 1;
+  string summary = 2;
+}
+
+// Public compact `--help --json` response for a single command.
+message CompactHelpCommand {
+  map<string, CompactHelpParam> payload_schema = 1;
+  repeated CompactHelpExample examples = 2;
+}
+
+message CompactHelpParam {
+  string type = 1;
+  string help = 2;
+}
+
+message CompactHelpExample {
+  string description = 1;
+  string cmd = 2;
+}

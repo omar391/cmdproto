@@ -4,11 +4,11 @@ This file only covers work that is **not implemented in V1**.
 
 ## Current V1 stance
 
-- `cmdproto` is descriptor-driven.
+- `cmdproto` is descriptor-plus-manifest driven.
 - Execution is unary: one request in, one final response out.
-- Per-command `--help`, `--help --json`, and `--help --json --verbose` are the
-  public introspection surfaces.
-- `cmdproto execute --json` is the machine execution entrypoint.
+- Per-command `--help` and `--help --json` are the public introspection
+  surfaces.
+- `cmdproto execute <path> --json` is the machine execution entrypoint.
 
 ## Future adapters
 
@@ -19,8 +19,8 @@ The same command ABI should be reusable across multiple transports:
 - MCP or JSON-RPC 2.0 transport for assistant integrations
 
 V1 does not implement those adapters yet. The goal is to keep the current
-descriptor format and runtime small enough that those adapters can sit around
-the same core rather than redefining the tool contract.
+descriptor set plus generated manifest small enough that those adapters can sit
+around the same core rather than redefining the tool contract.
 
 ## Future streaming
 

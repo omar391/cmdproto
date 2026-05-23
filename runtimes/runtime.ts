@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   createFileRegistry,
@@ -17,6 +18,17 @@ import {
   type JsonValue
 } from "@bufbuild/protobuf";
 import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
+import {
+  RuntimeFlagValueMode,
+  RuntimeJsonTypeKind,
+  RuntimeManifestSchema,
+  type RuntimeCommand as ManifestCommand,
+  type RuntimeFlagBinding,
+  type RuntimeHelpSurface,
+  type RuntimeJsonType,
+  type RuntimeManifest,
+  type RuntimeParam
+} from "./gen/cmdproto/v1/runtime_pb.js";
 
 export type JsonObject = BufJsonObject;
 
@@ -76,6 +88,19 @@ export interface CmdProtoSchema {
   methodByName: Map<string, MethodSpec>;
 }
 
+interface DescriptorRuntimeSchema {
+  registry: FileRegistry;
+  methodByName: Map<string, DescMethod>;
+}
+
+interface RuntimeCommandSpec {
+  manifest: ManifestCommand;
+  method: DescMethod;
+  bindings: string[][];
+  flagByToken: Map<string, RuntimeFlagBinding>;
+  paramByJsonName: Map<string, RuntimeParam>;
+}
+
 export interface CommandRequestJson {
   method: string;
   params?: JsonValue;
@@ -101,7 +126,8 @@ export type CommandResponseJson =
     };
 
 export interface HandlerContext {
-  method: MethodSpec;
+  methodName: string;
+  descriptor: DescMethod;
   request: CommandRequestJson;
 }
 
@@ -121,6 +147,7 @@ export interface CliResult {
 export interface AppOptions {
   handlers: HandlerMap;
   schemaPath?: string;
+  manifestPath?: string;
 }
 
 export interface RunMainOptions extends AppOptions {
@@ -135,13 +162,12 @@ const COMMAND_TOKEN_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LONG_FLAG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SHORT_FLAG_RE = /^[A-Za-z0-9]$/;
 const RESERVED_COMMAND_ROOTS = new Set(["cmdproto"]);
-const RESERVED_LONG_FLAGS = new Set(["help", "json", "verbose"]);
+const RESERVED_LONG_FLAGS = new Set(["help", "json"]);
 const RESERVED_SHORT_FLAGS = new Set(["h"]);
 const HELP_FLAG = "--help";
 const JSON_FLAG = "--json";
-const VERBOSE_FLAG = "--verbose";
-const EXECUTE_USAGE = "cmdproto execute --json '<request>'";
-const EXECUTE_SUMMARY = "Execute a machine request envelope.";
+const EXECUTE_USAGE = "cmdproto execute <path> --json '<payload>'";
+const EXECUTE_SUMMARY = "Execute a machine payload for a command path.";
 
 interface CommandBinding {
   key: string;
@@ -180,6 +206,31 @@ export function loadSchemaFromBinary(bytes: Uint8Array): CmdProtoSchema {
     methods,
     methodByName: new Map(methods.map((method) => [method.name, method]))
   };
+}
+
+function loadDescriptorRuntimeSchemaFromFile(path: string): DescriptorRuntimeSchema {
+  return loadDescriptorRuntimeSchemaFromBinary(readFileSync(path));
+}
+
+function loadDescriptorRuntimeSchemaFromBinary(bytes: Uint8Array): DescriptorRuntimeSchema {
+  const fileDescriptorSet = fromBinary(FileDescriptorSetSchema, bytes);
+  const registry = createFileRegistry(fileDescriptorSet);
+  const methodByName = new Map<string, DescMethod>();
+
+  for (const descriptor of registry) {
+    if (descriptor.kind !== "service") {
+      continue;
+    }
+    for (const method of descriptor.methods) {
+      methodByName.set(`${descriptor.typeName}.${method.name}`, method);
+    }
+  }
+
+  return { registry, methodByName };
+}
+
+function loadRuntimeManifestFromFile(path: string): RuntimeManifest {
+  return fromBinary(RuntimeManifestSchema, readFileSync(path));
 }
 
 function requireExtension(
@@ -393,13 +444,11 @@ function validateExampleRequestJson(
   rawRequest: string,
   registry: FileRegistry
 ): JsonObject {
-  const request = normalizeRequest(parseJsonRequest(rawRequest));
-  if (request.method !== method.name) {
-    throw new Error(
-      `${method.name} example request_json must use method "${method.name}"`
-    );
-  }
-  return canonicalizeJsonMessage(method.input, request.params ?? {}, registry) as JsonObject;
+  return canonicalizeJsonMessage(
+    method.input,
+    parseJsonRequest(rawRequest) as JsonValue,
+    registry
+  ) as JsonObject;
 }
 
 export function renderMethodUsage(method: MethodSpec): string {
@@ -614,11 +663,22 @@ function getFlagFields(method: MethodSpec): FieldSpec[] {
 }
 
 export class CmdProtoRuntime {
-  readonly schema: CmdProtoSchema;
+  readonly schema: DescriptorRuntimeSchema;
+  readonly manifest: RuntimeManifest;
+  readonly commands: RuntimeCommandSpec[];
+  readonly commandByMethod: Map<string, RuntimeCommandSpec>;
   readonly handlers: HandlerMap;
 
-  constructor(schema: CmdProtoSchema, handlers: HandlerMap) {
+  constructor(
+    schema: DescriptorRuntimeSchema,
+    manifest: RuntimeManifest,
+    commands: RuntimeCommandSpec[],
+    handlers: HandlerMap
+  ) {
     this.schema = schema;
+    this.manifest = manifest;
+    this.commands = commands;
+    this.commandByMethod = new Map(commands.map((command) => [command.manifest.method, command]));
     this.handlers = handlers;
   }
 
@@ -630,30 +690,31 @@ export class CmdProtoRuntime {
       return errorResponse(error);
     }
 
-    const method = this.schema.methodByName.get(request.method);
-    if (!method) {
+    const descriptor = this.schema.methodByName.get(request.method);
+    if (!descriptor) {
       return errorResponse(
         new CmdProtoError("METHOD_NOT_FOUND", `Unknown method: ${request.method}`),
         request.requestId
       );
     }
 
-    const handler = this.handlers[method.name];
+    const handler = this.handlers[request.method];
     if (!handler) {
       return errorResponse(
-        new CmdProtoError("HANDLER_NOT_FOUND", `No handler registered for ${method.name}`),
+        new CmdProtoError("HANDLER_NOT_FOUND", `No handler registered for ${request.method}`),
         request.requestId
       );
     }
 
     try {
-      const params = validateParams(this.schema, method, request.params ?? {});
+      const params = validateParams(this.schema, descriptor, request.params ?? {});
       const context: HandlerContext = {
-        method,
+        methodName: request.method,
+        descriptor,
         request
       };
       const rawResult = await handler(params, context);
-      const result = validateResult(this.schema, method, rawResult);
+      const result = validateResult(this.schema, descriptor, rawResult);
       return withRequestId({ ok: true, result }, request.requestId);
     } catch (error) {
       return errorResponse(error, request.requestId);
@@ -662,10 +723,12 @@ export class CmdProtoRuntime {
 }
 
 export function createRuntime(
-  schema: CmdProtoSchema,
+  schema: DescriptorRuntimeSchema,
+  manifest: RuntimeManifest,
   handlers: HandlerMap
 ): CmdProtoRuntime {
-  return new CmdProtoRuntime(schema, handlers);
+  const commands = buildRuntimeCommandSpecs(schema, manifest);
+  return new CmdProtoRuntime(schema, manifest, commands, handlers);
 }
 
 export function normalizeRequest(input: unknown): CommandRequestJson {
@@ -697,8 +760,8 @@ export function normalizeRequest(input: unknown): CommandRequestJson {
 }
 
 function validateParams(
-  schema: CmdProtoSchema,
-  method: MethodSpec,
+  schema: DescriptorRuntimeSchema,
+  method: DescMethod,
   params: JsonValue
 ): JsonObject {
   try {
@@ -709,8 +772,8 @@ function validateParams(
 }
 
 function validateResult(
-  schema: CmdProtoSchema,
-  method: MethodSpec,
+  schema: DescriptorRuntimeSchema,
+  method: DescMethod,
   result: JsonValue
 ): JsonValue {
   try {
@@ -772,23 +835,37 @@ export function getDefaultSchemaPath(cwd = process.cwd()): string {
   return join(cwd, "dist/schema.binpb");
 }
 
+export function getDefaultManifestPath(cwd = process.cwd()): string {
+  return join(cwd, "dist/runtime.binpb");
+}
+
 export function createRuntimeFromFile(
   handlers: HandlerMap,
-  schemaPath = getDefaultSchemaPath()
+  schemaPath = getDefaultSchemaPath(),
+  manifestPath = getDefaultManifestPath()
 ): CmdProtoRuntime {
-  const schema = loadSchemaFromFile(schemaPath);
-  return createRuntime(schema, handlers);
+  const schemaBytes = readFileSync(schemaPath);
+  const schema = loadDescriptorRuntimeSchemaFromBinary(schemaBytes);
+  const manifest = loadRuntimeManifestFromFile(manifestPath);
+  const schemaHash = createHash("sha256").update(schemaBytes).digest("hex");
+  if (manifest.descriptorSetSha256 !== schemaHash) {
+    throw new Error(
+      `runtime manifest descriptor hash mismatch: expected ${schemaHash}, got ${manifest.descriptorSetSha256 || "(missing)"}`
+    );
+  }
+  return createRuntime(schema, manifest, handlers);
 }
 
 export async function executeApp({
   handlers,
   schemaPath = getDefaultSchemaPath(),
+  manifestPath = getDefaultManifestPath(),
   argv = process.argv.slice(2),
   stdin = ""
 }: RunMainOptions): Promise<CliResult> {
   // The app runtime stays transport-neutral. Today `runCli()` is the one-shot
   // stdio adapter; future HTTP and streaming adapters should sit beside it.
-  const runtime = createRuntimeFromFile(handlers, schemaPath);
+  const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath);
   return runCli(runtime, argv, stdin);
 }
 
@@ -805,18 +882,19 @@ export async function runCli(
   argv: string[],
   stdin = ""
 ): Promise<CliResult> {
+  const normalizedArgv = normalizeCliArgv(argv);
   try {
-    const helpResult = runHelpCommand(runtime.schema, argv);
+    const helpResult = runRuntimeHelpCommand(runtime, normalizedArgv);
     if (helpResult) {
       return helpResult;
     }
 
-    const controlResult = await runCmdprotoCommand(runtime, argv, stdin);
+    const controlResult = await runCmdprotoCommand(runtime, normalizedArgv, stdin);
     if (controlResult) {
       return controlResult;
     }
 
-    const request = parseHumanCommand(runtime.schema, argv);
+    const request = parseManifestHumanCommand(runtime, normalizedArgv);
     const response = await runtime.dispatch(request);
     return jsonEnvelopeResult(response, response.ok ? 0 : 1);
   } catch (error) {
@@ -831,6 +909,245 @@ export async function runCli(
       1
     );
   }
+}
+
+function normalizeCliArgv(argv: string[]): string[] {
+  let start = 0;
+  while (argv[start] === "--") {
+    start += 1;
+  }
+  return start === 0 ? argv : argv.slice(start);
+}
+
+function buildRuntimeCommandSpecs(
+  schema: DescriptorRuntimeSchema,
+  manifest: RuntimeManifest
+): RuntimeCommandSpec[] {
+  const seenBindings = new Map<string, string>();
+
+  return manifest.commands.map((command) => {
+    const method = schema.methodByName.get(command.method);
+    if (!method) {
+      throw new Error(`Runtime manifest references unknown method ${command.method}`);
+    }
+    if (command.inputType !== method.input.typeName) {
+      throw new Error(
+        `Runtime manifest input type mismatch for ${command.method}: expected ${method.input.typeName}, got ${command.inputType}`
+      );
+    }
+    if (command.outputType !== method.output.typeName) {
+      throw new Error(
+        `Runtime manifest output type mismatch for ${command.method}: expected ${method.output.typeName}, got ${command.outputType}`
+      );
+    }
+
+    const flagByToken = new Map<string, RuntimeFlagBinding>();
+    for (const flag of command.parsePlan?.flags ?? []) {
+      flagByToken.set(flag.token, flag);
+    }
+
+    const paramByJsonName = new Map<string, RuntimeParam>();
+    for (const param of command.params) {
+      paramByJsonName.set(param.jsonName, param);
+    }
+
+    const bindings = command.bindings.map((binding) => splitCommandPath(binding));
+    for (const binding of command.bindings) {
+      const existing = seenBindings.get(binding);
+      if (existing) {
+        throw new Error(
+          `Runtime manifest reuses command binding "${binding}" for ${command.method} and ${existing}`
+        );
+      }
+      seenBindings.set(binding, command.method);
+    }
+
+    return {
+      manifest: command,
+      method,
+      bindings,
+      flagByToken,
+      paramByJsonName
+    };
+  });
+}
+
+function parseManifestHumanCommand(
+  runtime: CmdProtoRuntime,
+  argv: string[]
+): CommandRequestJson {
+  const match = findRuntimeCommand(runtime.commands, argv);
+  if (!match) {
+    throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${argv.join(" ")}`);
+  }
+
+  return {
+    method: match.command.manifest.method,
+    params: parseManifestArguments(match.command, argv.slice(match.tokens.length))
+  };
+}
+
+function findRuntimeCommand(
+  commands: RuntimeCommandSpec[],
+  argv: string[]
+): { command: RuntimeCommandSpec; tokens: string[] } | undefined {
+  const candidates: { command: RuntimeCommandSpec; tokens: string[] }[] = [];
+
+  for (const command of commands) {
+    for (const tokens of command.bindings) {
+      if (tokens.length > 0 && startsWith(argv, tokens)) {
+        candidates.push({ command, tokens });
+      }
+    }
+  }
+
+  candidates.sort((left, right) => right.tokens.length - left.tokens.length);
+  return candidates[0];
+}
+
+function findExactRuntimeCommand(
+  commands: RuntimeCommandSpec[],
+  argv: string[]
+): { command: RuntimeCommandSpec; tokens: string[] } | undefined {
+  const match = findRuntimeCommand(commands, argv);
+  if (!match || match.tokens.length !== argv.length) {
+    return undefined;
+  }
+  return match;
+}
+
+function parseManifestArguments(
+  command: RuntimeCommandSpec,
+  argv: string[]
+): JsonObject {
+  const params: JsonObject = {};
+  const positionals = (command.manifest.parsePlan?.positionalJsonNames ?? []).map((jsonName) => {
+    const param = command.paramByJsonName.get(jsonName);
+    if (!param) {
+      throw new Error(`Runtime manifest is missing positional param ${jsonName}`);
+    }
+    return param;
+  });
+  let positionalIndex = 0;
+  let positionalOnly = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (!positionalOnly && token === "--") {
+      positionalOnly = true;
+      continue;
+    }
+    if (!positionalOnly && isFlagToken(token)) {
+      const parsed = parseFlagToken(token);
+      const binding = command.flagByToken.get(parsed.name);
+      if (!binding) {
+        throw new CmdProtoError("INVALID_ARGUMENT", `Unknown flag: ${parsed.name}`);
+      }
+      const param = command.paramByJsonName.get(binding.jsonName);
+      if (!param) {
+        throw new Error(`Runtime manifest is missing flag param ${binding.jsonName}`);
+      }
+      const { value, consumedNext } = parseManifestFlagValue(param, binding, parsed.value, argv[index + 1]);
+      setManifestParam(params, param, value);
+      if (consumedNext) {
+        index += 1;
+      }
+      continue;
+    }
+
+    const param = positionals[positionalIndex];
+    if (!param) {
+      throw new CmdProtoError("INVALID_ARGUMENT", `Unexpected positional argument: ${token}`);
+    }
+    setManifestParam(params, param, parseManifestCliValue(param, token));
+    positionalIndex += 1;
+  }
+
+  for (const param of positionals) {
+    if (!(param.jsonName in params)) {
+      throw new CmdProtoError("INVALID_ARGUMENT", `Missing positional argument: ${param.protoName}`);
+    }
+  }
+
+  return params;
+}
+
+function parseManifestFlagValue(
+  param: RuntimeParam,
+  binding: RuntimeFlagBinding,
+  inlineValue: string | undefined,
+  nextValue: string | undefined
+): { value: JsonValue; consumedNext: boolean } {
+  if (binding.valueMode === RuntimeFlagValueMode.BOOLEAN_OPTIONAL) {
+    return {
+      value: inlineValue === undefined ? true : parseBoolean(inlineValue),
+      consumedNext: false
+    };
+  }
+
+  const value = inlineValue ?? nextValue;
+  if (value === undefined) {
+    throw new CmdProtoError("INVALID_ARGUMENT", `Flag ${binding.token} requires a value`);
+  }
+  return {
+    value: parseManifestCliValue(param, value),
+    consumedNext: inlineValue === undefined
+  };
+}
+
+function setManifestParam(
+  params: JsonObject,
+  param: RuntimeParam,
+  value: JsonValue
+): void {
+  if (param.jsonType?.kind === RuntimeJsonTypeKind.ARRAY) {
+    const current = params[param.jsonName];
+    params[param.jsonName] = Array.isArray(current) ? [...current, value] : [value];
+    return;
+  }
+  params[param.jsonName] = value;
+}
+
+function parseManifestCliValue(
+  param: RuntimeParam,
+  raw: string
+): JsonValue {
+  const jsonType = param.jsonType;
+  if (!jsonType) {
+    throw new Error(`Runtime manifest is missing json_type for ${param.jsonName}`);
+  }
+  return parseManifestValueByType(jsonType, raw, param.protoName);
+}
+
+function parseManifestValueByType(
+  jsonType: RuntimeJsonType,
+  raw: string,
+  fieldName: string
+): JsonValue {
+  switch (jsonType.kind) {
+    case RuntimeJsonTypeKind.BOOLEAN:
+      return parseBoolean(raw);
+    case RuntimeJsonTypeKind.NUMBER:
+      return parseNumber(raw, fieldName);
+    case RuntimeJsonTypeKind.STRING:
+      return raw;
+    case RuntimeJsonTypeKind.ARRAY:
+      switch (jsonType.elementKind) {
+        case RuntimeJsonTypeKind.BOOLEAN:
+          return parseBoolean(raw);
+        case RuntimeJsonTypeKind.NUMBER:
+          return parseNumber(raw, fieldName);
+        case RuntimeJsonTypeKind.STRING:
+          return raw;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+
+  throw new CmdProtoError("INVALID_ARGUMENT", `Field ${fieldName} is not CLI-scalar`);
 }
 
 export function parseHumanCommand(
@@ -859,7 +1176,10 @@ export function renderHelp(schema: CmdProtoSchema): string {
     "Command help:",
     "  <command> --help",
     "  <command> --help --json",
-    "  <command> --help --json --verbose",
+    "",
+    "Notes:",
+    "  --help includes machine execution notes and type names.",
+    "  --help --json prints compact payload-schema JSON.",
     "",
     "Machine control:",
     `  ${EXECUTE_USAGE.padEnd(36)} ${EXECUTE_SUMMARY}`.trimEnd()
@@ -879,14 +1199,24 @@ async function runCmdprotoCommand(
   }
 
   if (argv[1] === "execute") {
-    if (argv[2] !== "--json" || argv.length > 4) {
-      throw new CmdProtoError(
-        "INVALID_ARGUMENT",
-        `Usage: ${EXECUTE_USAGE}`
-      );
+    const executeArgv = argv.slice(2);
+
+    const jsonIndex = executeArgv.indexOf(JSON_FLAG);
+    if (jsonIndex < 1 || jsonIndex < executeArgv.length - 2 || jsonIndex > executeArgv.length - 1) {
+      throw new CmdProtoError("INVALID_ARGUMENT", `Usage: ${EXECUTE_USAGE}`);
     }
-    const request = parseJsonRequest(argv[3] ?? stdin);
-    const response = await runtime.dispatch(request);
+
+    const pathTokens = executeArgv.slice(0, jsonIndex);
+    const match = findExactRuntimeCommand(runtime.commands, pathTokens);
+    if (!match) {
+      throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${pathTokens.join(" ")}`);
+    }
+
+    const params = parseJsonRequest(executeArgv[jsonIndex + 1] ?? stdin) as JsonValue;
+    const response = await runtime.dispatch({
+      method: match.command.manifest.method,
+      params
+    });
     return jsonEnvelopeResult(response, response.ok ? 0 : 1);
   }
 
@@ -894,6 +1224,56 @@ async function runCmdprotoCommand(
     "INVALID_ARGUMENT",
     `Unknown cmdproto command: ${argv.slice(1).join(" ")}`
   );
+}
+
+function runRuntimeHelpCommand(runtime: CmdProtoRuntime, argv: string[]): CliResult | undefined {
+  if (argv.length === 0) {
+    return renderRuntimeHelpSurface(runtime.manifest.rootHelp, false);
+  }
+
+  const helpRequested = argv.includes(HELP_FLAG);
+  if (!helpRequested && !(argv[0] === "cmdproto" && argv.length === 1)) {
+    return undefined;
+  }
+
+  const json = helpRequested && argv.includes(JSON_FLAG);
+  const filtered = helpRequested
+    ? argv.filter((token) => token !== HELP_FLAG && token !== JSON_FLAG)
+    : argv;
+
+  if (filtered.length === 0) {
+    return renderRuntimeHelpSurface(runtime.manifest.rootHelp, json);
+  }
+
+  if (filtered[0] === "cmdproto") {
+    if (filtered.length === 1) {
+      return renderRuntimeHelpSurface(runtime.manifest.controlHelp, json);
+    }
+    if (filtered.length === 2 && filtered[1] === "execute") {
+      return renderRuntimeHelpSurface(runtime.manifest.execute?.help, json);
+    }
+    throw new CmdProtoError(
+      "INVALID_ARGUMENT",
+      `Unknown cmdproto command: ${filtered.slice(1).join(" ")}`
+    );
+  }
+
+  const match = findExactRuntimeCommand(runtime.commands, filtered);
+  if (!match) {
+    throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${filtered.join(" ")}`);
+  }
+
+  return renderRuntimeHelpSurface(match.command.manifest.help, json);
+}
+
+function renderRuntimeHelpSurface(
+  surface: RuntimeHelpSurface | undefined,
+  json: boolean
+): CliResult {
+  if (!surface) {
+    throw new Error("Runtime manifest is missing help output");
+  }
+  return json ? rawJsonTextResult(surface.json, 0) : textResult(surface.text);
 }
 
 function runHelpCommand(schema: CmdProtoSchema, argv: string[]): CliResult | undefined {
@@ -907,56 +1287,33 @@ function runHelpCommand(schema: CmdProtoSchema, argv: string[]): CliResult | und
   }
 
   const json = helpRequested && argv.includes(JSON_FLAG);
-  const verbose = json && argv.includes(VERBOSE_FLAG);
   const filtered = helpRequested
-    ? argv.filter((token) => token !== HELP_FLAG && token !== JSON_FLAG && token !== VERBOSE_FLAG)
+    ? argv.filter((token) => token !== HELP_FLAG && token !== JSON_FLAG)
     : argv;
 
   if (filtered.length === 0) {
-    return json
-      ? renderJsonHelp(
-          verbose ? buildVerboseGlobalHelpJson(schema) : buildMinimalGlobalHelpJson(schema),
-          verbose
-        )
-      : textResult(renderHelp(schema));
+    return json ? renderJsonHelp(buildMinimalGlobalHelpJson(schema)) : textResult(renderHelp(schema));
   }
 
   if (filtered[0] === "cmdproto") {
-    return renderCmdprotoHelp(filtered.slice(1), json, verbose);
+    return renderCmdprotoHelp(filtered.slice(1), json);
   }
 
-  const match = findCommand(schema.methods, filtered);
+  const match = findExactCommand(schema.methods, filtered);
   if (!match) {
     throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${filtered.join(" ")}`);
   }
 
-  return json
-    ? renderJsonHelp(
-        verbose
-          ? buildVerboseMethodHelpJson(match.method)
-          : buildMinimalMethodHelpJson(match.method),
-        verbose
-      )
-    : textResult(renderMethodHelp(match.method));
+  return json ? renderJsonHelp(buildMinimalMethodHelpJson(match.method)) : textResult(renderMethodHelp(match.method));
 }
 
-function renderCmdprotoHelp(argv: string[], json: boolean, verbose: boolean): CliResult {
+function renderCmdprotoHelp(argv: string[], json: boolean): CliResult {
   if (argv.length === 0) {
-    return json
-      ? renderJsonHelp(
-          verbose ? buildVerboseCmdprotoIndexJson() : buildMinimalCmdprotoIndexJson(),
-          verbose
-        )
-      : textResult(renderCmdprotoIndexHelp());
+    return json ? renderJsonHelp(buildMinimalCmdprotoIndexJson()) : textResult(renderCmdprotoIndexHelp());
   }
 
   if (argv.length === 1 && argv[0] === "execute") {
-    return json
-      ? renderJsonHelp(
-          verbose ? buildVerboseExecuteHelpJson() : buildMinimalExecuteHelpJson(),
-          verbose
-        )
-      : textResult(renderExecuteHelp());
+    return json ? renderJsonHelp(buildMinimalExecuteHelpJson()) : textResult(renderExecuteHelp());
   }
 
   throw new CmdProtoError(
@@ -970,63 +1327,24 @@ function buildMinimalGlobalHelpJson(schema: CmdProtoSchema): JsonObject {
     commands: schema.methods
       .filter((method) => !method.command.hidden)
       .map((method) => ({
-        method: method.name,
-        path: method.command.path,
+        path: getPreferredMachineCommandPath(method),
         ...(method.command.summary ? { summary: method.command.summary } : {})
       })),
-    cmdproto: [buildMinimalExecuteHelpJson()]
-  };
-}
-
-function buildVerboseGlobalHelpJson(schema: CmdProtoSchema): JsonObject {
-  return {
-    kind: "application",
-    commands: schema.methods
-      .filter((method) => !method.command.hidden)
-      .map((method) => buildVerboseMethodHelpJson(method)),
-    machineControl: [buildExecuteHelpSummaryJson()]
+    execute: buildMinimalExecuteHelpJson()
   };
 }
 
 function buildMinimalMethodHelpJson(method: MethodSpec): JsonObject {
   return {
-    method: method.name,
-    fields: buildMinimalFieldsJson(method),
-    examples: method.command.example.map((example) => ({
-      cmd: example.command,
-      json: parseJsonValue(example.requestJson)
-    }))
+    payload_schema: buildMinimalFieldsJson(method),
+    examples: method.command.example.map((example) => buildMinimalExampleHelpJson(method, example))
   };
 }
 
-function buildVerboseMethodHelpJson(method: MethodSpec): JsonObject {
+function buildMinimalExampleHelpJson(method: MethodSpec, example: CliExample): JsonObject {
   return {
-    kind: "command",
-    method: method.name,
-    service: method.serviceName,
-    rpc: method.rpcName,
-    path: method.command.path,
-    usage: renderMethodUsage(method),
-    aliases: method.command.alias,
-    summary: method.command.summary,
-    input: method.input.typeName,
-    output: method.output.typeName,
-    deprecated: method.command.deprecated || method.descriptor.deprecated,
-    fields: method.fields
-      .filter((field) => !field.param.hidden)
-      .map((field) => ({
-        name: field.name,
-        jsonName: field.jsonName,
-        ...(field.param.positional ? { positionalIndex: field.param.positional.index } : {}),
-        ...(field.param.flag?.long ? { longFlag: field.param.flag.long } : {}),
-        ...(field.param.flag?.short ? { shortFlag: field.param.flag.short } : {}),
-        ...(field.param.help ? { help: field.param.help } : {})
-      })),
-    examples: method.command.example.map((example) => ({
-      command: example.command,
-      ...(example.description ? { description: example.description } : {}),
-      json: parseJsonValue(example.requestJson)
-    }))
+    ...(example.description ? { description: example.description } : {}),
+    cmd: renderExecuteExampleCommand(method, example.requestJson)
   };
 }
 
@@ -1040,24 +1358,60 @@ function buildMinimalFieldsJson(method: MethodSpec): JsonObject {
 
 function buildMinimalFieldJson(field: FieldSpec): JsonObject {
   return {
-    ...(field.name !== field.jsonName ? { name: field.name } : {}),
-    ...(field.param.positional ? { positionalIndex: field.param.positional.index } : {}),
-    ...(field.param.flag?.long ? { longFlag: field.param.flag.long } : {}),
-    ...(field.param.flag?.short ? { shortFlag: field.param.flag.short } : {}),
+    type: renderJsonFieldType(field.descriptor),
     ...(field.param.help ? { help: field.param.help } : {})
   };
 }
 
-function buildMinimalCmdprotoIndexJson(): JsonObject {
-  return {
-    commands: [buildMinimalExecuteHelpJson()]
-  };
+function renderJsonFieldType(field: DescField): string {
+  switch (field.fieldKind) {
+    case "scalar":
+      return renderJsonScalarType(field.scalar);
+    case "enum":
+      return "string";
+    case "list":
+      if (field.listKind === "scalar") {
+        return `array<${renderJsonScalarType(field.scalar)}>`;
+      }
+      if (field.listKind === "enum") {
+        return "array<string>";
+      }
+      return "array<object>";
+    case "map":
+      return "object";
+    default:
+      return "object";
+  }
 }
 
-function buildVerboseCmdprotoIndexJson(): JsonObject {
+function renderJsonScalarType(scalar: ScalarType): string {
+  switch (scalar) {
+    case ScalarType.BOOL:
+      return "boolean";
+    case ScalarType.DOUBLE:
+    case ScalarType.FLOAT:
+    case ScalarType.INT32:
+    case ScalarType.UINT32:
+    case ScalarType.SINT32:
+    case ScalarType.FIXED32:
+    case ScalarType.SFIXED32:
+      return "number";
+    case ScalarType.INT64:
+    case ScalarType.UINT64:
+    case ScalarType.SINT64:
+    case ScalarType.FIXED64:
+    case ScalarType.SFIXED64:
+    case ScalarType.STRING:
+    case ScalarType.BYTES:
+      return "string";
+    default:
+      return "string";
+  }
+}
+
+function buildMinimalCmdprotoIndexJson(): JsonObject {
   return {
-    kind: "control",
-    commands: [buildExecuteHelpSummaryJson()]
+    execute: buildMinimalExecuteHelpJson()
   };
 }
 
@@ -1071,31 +1425,6 @@ function buildExecuteHelpSummaryJson(): JsonObject {
 
 function buildMinimalExecuteHelpJson(): JsonObject {
   return buildExecuteHelpSummaryJson();
-}
-
-function buildVerboseExecuteHelpJson(): JsonObject {
-  return {
-    ...buildExecuteHelpSummaryJson(),
-    request: {
-      type: "object",
-      additionalProperties: false,
-      required: ["method"],
-      properties: {
-        method: {
-          type: "string",
-          description: "Fully-qualified RPC name."
-        },
-        params: {
-          type: "object",
-          description: "JSON input object for the RPC."
-        },
-        requestId: {
-          type: "string",
-          description: "Optional caller-provided correlation id."
-        }
-      }
-    }
-  };
 }
 
 function renderCmdprotoIndexHelp(): string {
@@ -1114,10 +1443,9 @@ function renderExecuteHelp(): string {
     "Usage:",
     `  ${EXECUTE_USAGE}`,
     "",
-    "Request fields:",
-    "  method       Fully-qualified RPC name.",
-    "  params       JSON input object for the RPC.",
-    "  requestId    Optional caller-provided correlation id."
+    "Notes:",
+    "  <path> resolves a declared command path or alias.",
+    "  <payload> is the JSON params object for that command."
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -1130,25 +1458,45 @@ function renderMethodHelp(method: MethodSpec): string {
     `  ${renderMethodUsage(method)}`,
     "",
     "Machine method:",
-    `  ${method.name}`
+    `  ${method.name}`,
+    "",
+    "Machine execute:",
+    `  ${renderExecuteTemplate(method)}`,
+    "",
+    "Payload type:",
+    `  ${method.input.typeName}`,
+    "Result type:",
+    `  ${method.output.typeName}`
   ];
 
   if (method.command.alias.length > 0) {
     lines.push("", "Aliases:", `  ${method.command.alias.join(", ")}`);
   }
 
-  lines.push("", "Parameters:");
-  for (const field of getHelpFields(method)) {
-    lines.push(`  ${renderFieldHelpLabel(field).padEnd(18)} ${field.param.help}`.trimEnd());
-  }
+  lines.push("", "Parameters:", ...renderHelpTable(
+    ["CLI param", "JSON param", "Position", "Type", "Description"],
+    getHelpFields(method).map((field) => [
+      renderCliFieldLabel(field),
+      field.jsonName,
+      renderFieldPosition(field),
+      renderJsonFieldType(field.descriptor),
+      field.param.help
+    ])
+  ));
 
   if (method.command.example.length > 0) {
-    lines.push("", "Examples:");
-    for (const example of method.command.example) {
-      const detail = example.description ? ` ${example.description}` : "";
-      lines.push(`  ${example.command}${detail}`);
-      lines.push(`  ${example.requestJson}`);
-    }
+    lines.push(
+      "",
+      "Examples:",
+      ...renderHelpTable(
+        ["Description", "Normal cmd", "JSON cmd"],
+        method.command.example.map((example) => [
+          example.description,
+          example.command,
+          renderExecuteExampleCommand(method, example.requestJson)
+        ])
+      )
+    );
   }
 
   return `${lines.join("\n")}\n`;
@@ -1163,19 +1511,22 @@ function getHelpFields(method: MethodSpec): FieldSpec[] {
         (right.param.positional?.index ?? Number.MAX_SAFE_INTEGER)
     );
   const flags = method.fields
-    .filter((field) => field.param.flag && !field.param.hidden)
-    .sort((left, right) => renderFieldHelpLabel(left).localeCompare(renderFieldHelpLabel(right)));
+    .filter((field) => field.param.flag && !field.param.positional && !field.param.hidden)
+    .sort((left, right) => renderCliFieldLabel(left).localeCompare(renderCliFieldLabel(right)));
+  const payloadOnly = method.fields
+    .filter((field) => !field.param.positional && !field.param.flag && !field.param.hidden)
+    .sort((left, right) => left.jsonName.localeCompare(right.jsonName));
 
-  return [...positionals, ...flags];
+  return [...positionals, ...flags, ...payloadOnly];
 }
 
-function renderFieldHelpLabel(field: FieldSpec): string {
+function renderCliFieldLabel(field: FieldSpec): string {
   if (field.param.positional) {
     return `<${field.name.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}>`;
   }
   const flag = field.param.flag;
   if (!flag) {
-    return field.name;
+    return "-";
   }
 
   const names = [];
@@ -1186,6 +1537,28 @@ function renderFieldHelpLabel(field: FieldSpec): string {
     names.push(`--${flag.long}`);
   }
   return names.join(", ");
+}
+
+function renderFieldPosition(field: FieldSpec): string {
+  return field.param.positional ? String(field.param.positional.index) : "-";
+}
+
+function renderHelpTable(headers: string[], rows: string[][]): string[] {
+  const widths = headers.map((header, index) =>
+    Math.max(
+      header.length,
+      ...rows.map((row) => (row[index] ?? "").length)
+    )
+  );
+
+  const renderRow = (row: string[]) =>
+    `  ${row.map((cell, index) => (cell ?? "").padEnd(widths[index] ?? 0)).join("  ")}`.trimEnd();
+
+  return [
+    renderRow(headers),
+    renderRow(widths.map((width) => "-".repeat(width))),
+    ...rows.map(renderRow)
+  ];
 }
 
 function parseJsonRequest(raw: string): unknown {
@@ -1200,12 +1573,47 @@ function parseJsonRequest(raw: string): unknown {
   }
 }
 
-function parseJsonValue(raw: string): JsonValue {
-  return parseJsonRequest(raw) as JsonValue;
+function renderExecuteTemplate(method: MethodSpec): string {
+  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json '<payload>'`;
 }
 
-function renderJsonHelp(value: JsonObject, verbose: boolean): CliResult {
-  return verbose ? jsonEnvelopeResult({ ok: true, result: value }, 0) : jsonTextResult(value, 0);
+function renderExecuteExampleCommand(method: MethodSpec, requestJson: string): string {
+  const payload = normalizeExamplePayload(requestJson);
+  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json ${quoteShellArgument(
+    JSON.stringify(payload)
+  )}`;
+}
+
+function normalizeExamplePayload(rawRequest: string): JsonValue {
+  const parsed = parseJsonRequest(rawRequest) as JsonValue;
+  if (
+    isPlainObject(parsed) &&
+    Object.keys(parsed).every((key) => REQUEST_KEYS.has(key)) &&
+    typeof parsed.method === "string"
+  ) {
+    return normalizeRequest(parsed).params ?? {};
+  }
+  return parsed;
+}
+
+function getPreferredMachineCommandPath(method: MethodSpec): string {
+  const candidates = [method.command.path, ...method.command.alias].map((candidate) =>
+    normalizeCommandPath(candidate)
+  );
+  return candidates.reduce((best, candidate) => {
+    if (candidate.length < best.length) {
+      return candidate;
+    }
+    return best;
+  });
+}
+
+function quoteShellArgument(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function renderJsonHelp(value: JsonObject): CliResult {
+  return jsonTextResult(value, 0);
 }
 
 function findCommand(
@@ -1223,6 +1631,17 @@ function findCommand(
 
   candidates.sort((left, right) => right.tokens.length - left.tokens.length);
   return candidates[0];
+}
+
+function findExactCommand(
+  methods: MethodSpec[],
+  argv: string[]
+): { method: MethodSpec; tokens: string[] } | undefined {
+  const match = findCommand(methods, argv);
+  if (!match || match.tokens.length !== argv.length) {
+    return undefined;
+  }
+  return match;
 }
 
 function findCommandMatchForMethod(
@@ -1452,7 +1871,7 @@ function parseNumber(raw: string, fieldName: string): number {
 function jsonTextResult(value: unknown, statusCode: number): CliResult {
   return {
     statusCode,
-    stdout: `${JSON.stringify(value, null, 2)}\n`,
+    stdout: `${JSON.stringify(value)}\n`,
     stderr: ""
   };
 }
@@ -1460,7 +1879,15 @@ function jsonTextResult(value: unknown, statusCode: number): CliResult {
 function jsonEnvelopeResult(value: unknown, statusCode: number): CliResult {
   return {
     statusCode,
-    stdout: `${JSON.stringify(value, null, 2)}\n`,
+    stdout: `${JSON.stringify(value)}\n`,
+    stderr: ""
+  };
+}
+
+function rawJsonTextResult(value: string, statusCode: number): CliResult {
+  return {
+    statusCode,
+    stdout: `${value}\n`,
     stderr: ""
   };
 }

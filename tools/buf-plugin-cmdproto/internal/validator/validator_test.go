@@ -24,7 +24,7 @@ service AppService {
       summary: "Create a session."
       example: {
         command: "session create checkout --profile local"
-        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"workflowRef\":\"checkout\",\"profileName\":\"local\"}}"
+        request_json: "{\"workflowRef\":\"checkout\",\"profileName\":\"local\"}"
       }
     };
   }
@@ -73,7 +73,7 @@ service AppService {
       path: "session create"
       example: {
         command: "session create checkout"
-        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"profileName\":\"local\"}}"
+        request_json: "{\"profileName\":\"local\"}"
       }
     };
   }
@@ -124,7 +124,7 @@ service AppService {
       path: "session"
       example: {
         command: "session checkout"
-        request_json: "{\"method\":\"app.v1.AppService.SessionLookup\",\"params\":{\"sessionName\":\"checkout\"}}"
+        request_json: "{\"sessionName\":\"checkout\"}"
       }
     };
   }
@@ -134,7 +134,7 @@ service AppService {
       path: "session create"
       example: {
         command: "session create"
-        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{}}"
+        request_json: "{}"
       }
     };
   }
@@ -181,7 +181,7 @@ service AppService {
       path: "session create"
       example: {
         command: "session create"
-        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{}}"
+        request_json: "{}"
       }
     };
   }
@@ -239,7 +239,7 @@ message SessionCreateResponse {
 	}
 }
 
-func TestBufLintRejectsExampleMethodMismatch(t *testing.T) {
+func TestBufLintRejectsNonObjectExamplePayload(t *testing.T) {
 	workspace := writeWorkspace(t, `
 edition = "2024";
 
@@ -252,8 +252,8 @@ service AppService {
     option (cmdproto.v1.command) = {
       path: "session create"
       example: {
-        command: "session create checkout"
-        request_json: "{\"method\":\"app.v1.AppService.SessionLookup\",\"params\":{\"workflowRef\":\"checkout\"}}"
+        command: "session create"
+        request_json: "\"checkout\""
       }
     };
   }
@@ -269,12 +269,12 @@ message SessionCreateResponse {
 `)
 
 	output := runBufLintExpectFailure(t, workspace)
-	if !strings.Contains(output, "request field method must be") {
-		t.Fatalf("expected method mismatch error, got:\n%s", output)
+	if !strings.Contains(output, "request_json must be a JSON object") {
+		t.Fatalf("expected non-object payload error, got:\n%s", output)
 	}
 }
 
-func TestBufLintRejectsReservedVerboseFlag(t *testing.T) {
+func TestBufLintAllowsVerboseFlag(t *testing.T) {
 	workspace := writeWorkspace(t, `
 edition = "2024";
 
@@ -287,8 +287,8 @@ service AppService {
     option (cmdproto.v1.command) = {
       path: "session create"
       example: {
-        command: "session create checkout"
-        request_json: "{\"method\":\"app.v1.AppService.SessionCreate\",\"params\":{\"output\":\"wide\"}}"
+        command: "session create --verbose wide"
+        request_json: "{\"output\":\"wide\"}"
       }
     };
   }
@@ -309,9 +309,10 @@ message SessionCreateResponse {
 }
 `)
 
-	output := runBufLintExpectFailure(t, workspace)
-	if !strings.Contains(output, "reserved long flag") || !strings.Contains(output, "--verbose") {
-		t.Fatalf("expected reserved verbose flag error, got:\n%s", output)
+	command := exec.Command("buf", "lint", workspace, "--error-format=json")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("buf lint failed unexpectedly:\n%s", output)
 	}
 }
 

@@ -2,6 +2,8 @@ edition = "2024";
 
 package cmdproto.v1;
 
+option go_package = "cmdproto.tools/buf-plugin-cmdproto/internal/gen/cmdproto/v1;cmdprotov1";
+
 import "google/protobuf/descriptor.proto";
 
 extend google.protobuf.MethodOptions {

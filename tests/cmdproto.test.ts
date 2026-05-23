@@ -3,9 +3,9 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ScalarType, type DescField } from "@bufbuild/protobuf";
 import {
+  getDefaultManifestPath,
   loadSchemaFromFile,
   parseHumanCommand,
-  renderHelp,
   runCli,
   validateMethodSpecs,
   type FieldSpec,
@@ -19,8 +19,12 @@ import {
 } from "../examples/greeter/src/app.js";
 
 const SCHEMA_PATH = GREETER_SCHEMA_PATH;
+const GREETER_REQUEST_JSON = "{\"name\":\"Ada\",\"shout\":true}";
+const GREETER_EXECUTE_CMD =
+  `cmdproto execute greet --json '${GREETER_REQUEST_JSON}'`;
 
 before(() => {
+  execFileSync("npm", ["run", "schema:build"], { stdio: "ignore" });
   execFileSync("npm", ["run", "schema:build:greeter"], { stdio: "ignore" });
 });
 
@@ -40,7 +44,7 @@ describe("cmdproto descriptors", () => {
     assert.equal(method.command.example[0]?.command, "greet Ada -s");
     assert.equal(
       method.command.example[0]?.requestJson,
-      "{\"method\":\"greeter.v1.GreeterService.SayHello\",\"params\":{\"name\":\"Ada\",\"shout\":true}}"
+      GREETER_REQUEST_JSON
     );
     assert.equal(method.fields.find((field) => field.name === "name")?.param.positional?.index, 1);
     assert.equal(method.fields.find((field) => field.name === "shout")?.param.flag?.long, "shout");
@@ -71,12 +75,9 @@ describe("cmdproto runtime", () => {
         await runCli(runtime, [
           "cmdproto",
           "execute",
+          "greet",
           "--json",
-          JSON.stringify({
-            method: GREETER_METHOD,
-            params: { name: "Ada", shout: true },
-            requestId: "req-1"
-          })
+          GREETER_REQUEST_JSON
         ])
       ).stdout
     );
@@ -85,7 +86,6 @@ describe("cmdproto runtime", () => {
     assert.deepEqual(human.result, { message: "HELLO, ADA!" });
     assert.equal(machine.ok, true);
     assert.deepEqual(machine.result, human.result);
-    assert.equal(machine.requestId, "req-1");
   });
 
   it("rejects undeclared methods", async () => {
@@ -116,10 +116,11 @@ describe("cmdproto runtime", () => {
     const result = await runCli(runtime, [
       "cmdproto",
       "execute",
+      "greet",
       "--json",
       JSON.stringify({
-        method: GREETER_METHOD,
-        params: { name: "Ada", extra: "blocked" }
+        name: "Ada",
+        extra: "blocked"
       })
     ]);
     const response = parseStdout(result.stdout);
@@ -127,6 +128,20 @@ describe("cmdproto runtime", () => {
     assert.equal(result.statusCode, 1);
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "INVALID_ARGUMENT");
+  });
+
+  it("fails fast when the runtime manifest is missing", () => {
+    assert.throws(
+      () => createGreeterRuntime(SCHEMA_PATH, "/tmp/cmdproto-missing-runtime.binpb"),
+      /ENOENT/
+    );
+  });
+
+  it("fails fast when the runtime manifest hash does not match the descriptor set", () => {
+    assert.throws(
+      () => createGreeterRuntime(SCHEMA_PATH, getDefaultManifestPath()),
+      /descriptor hash mismatch/
+    );
   });
 
   it("fails closed for unknown request envelope fields", async () => {
@@ -141,9 +156,9 @@ describe("cmdproto runtime", () => {
     assert.equal(response.error.code, "INVALID_REQUEST");
   });
 
-  it("renders coherent text and JSON help from descriptors", async () => {
+  it("renders coherent text and JSON help from the manifest", async () => {
     const runtime = createGreeterRuntime(SCHEMA_PATH);
-    const help = renderHelp(runtime.schema);
+    const help = (await runCli(runtime, ["--help"])).stdout;
     const globalJson = parseStdout(
       (await runCli(runtime, ["--help", "--json"])).stdout
     );
@@ -151,32 +166,61 @@ describe("cmdproto runtime", () => {
     const commandJson = parseStdout(
       (await runCli(runtime, ["greet", "--help", "--json"])).stdout
     );
-    const verboseCommandJson = parseStdout(
-      (await runCli(runtime, ["greet", "--help", "--json", "--verbose"])).stdout
-    );
     const controlJson = parseStdout(
       (await runCli(runtime, ["cmdproto", "--help", "--json"])).stdout
     );
 
     assert.match(help, /greet <NAME> \[-s, --shout\]\s+Render a greeting\./);
-    assert.match(help, /--json --verbose/);
-    assert.match(help, /cmdproto execute --json/);
-    assert.equal(globalJson.commands[0].method, GREETER_METHOD);
+    assert.doesNotMatch(help, /--json --verbose/);
+    assert.match(help, /cmdproto execute <path> --json/);
+    assert.equal(globalJson.commands[0].path, "greet");
+    assert.equal(globalJson.execute.usage, "cmdproto execute <path> --json '<payload>'");
     assert.match(commandHelp.stdout, /Usage:\n  greet <NAME> \[-s, --shout\]/);
     assert.match(commandHelp.stdout, /Machine method:\n  greeter\.v1\.GreeterService\.SayHello/);
-    assert.equal(commandJson.method, GREETER_METHOD);
-    assert.equal(commandJson.fields.name.positionalIndex, 1);
-    assert.equal(commandJson.fields.shout.shortFlag, "s");
-    assert.equal(commandJson.fields.shout.longFlag, "shout");
-    assert.ok(!("longFlag" in commandJson.fields.name));
-    assert.equal(commandJson.examples[0].cmd, "greet Ada -s");
-    assert.equal(commandJson.examples[0].json.method, GREETER_METHOD);
-    assert.equal(commandJson.examples[0].json.params.shout, true);
-    assert.equal(verboseCommandJson.ok, true);
-    assert.equal(verboseCommandJson.result.fields[1].shortFlag, "s");
-    assert.equal(verboseCommandJson.result.examples[0].command, "greet Ada -s");
-    assert.equal(verboseCommandJson.result.examples[0].json.method, GREETER_METHOD);
-    assert.equal(controlJson.commands[0].name, "cmdproto execute");
+    assert.match(commandHelp.stdout, /Machine execute:\n  cmdproto execute greet --json '<payload>'/);
+    assert.match(commandHelp.stdout, /Payload type:\n  greeter\.v1\.SayHelloRequest/);
+    assert.match(commandHelp.stdout, /Result type:\n  greeter\.v1\.SayHelloResponse/);
+    assert.match(commandHelp.stdout, /Parameters:\n  CLI param\s+JSON param\s+Position\s+Type\s+Description/);
+    assert.match(commandHelp.stdout, /<NAME>\s+name\s+1\s+string\s+Name to greet\./);
+    assert.match(commandHelp.stdout, /-s, --shout\s+shout\s+-\s+boolean\s+Uppercase the greeting\./);
+    assert.match(commandHelp.stdout, /Examples:\n  Description\s+Normal cmd\s+JSON cmd/);
+    assert.match(commandHelp.stdout, /Render a loud greeting\.\s+greet Ada -s\s+cmdproto execute greet --json '\{"name":"Ada","shout":true\}'/);
+    assert.ok(!("method" in commandJson));
+    assert.equal(commandJson.payload_schema.name.type, "string");
+    assert.equal(commandJson.payload_schema.shout.type, "boolean");
+    assert.equal(commandJson.payload_schema.name.help, "Name to greet.");
+    assert.equal(commandJson.payload_schema.shout.help, "Uppercase the greeting.");
+    assert.ok(!("positionalIndex" in commandJson.payload_schema.name));
+    assert.ok(!("longFlag" in commandJson.payload_schema.shout));
+    assert.ok(!("shortFlag" in commandJson.payload_schema.shout));
+    assert.equal(commandJson.examples[0].description, "Render a loud greeting.");
+    assert.equal(commandJson.examples[0].cmd, GREETER_EXECUTE_CMD);
+    assert.equal(controlJson.execute.name, "cmdproto execute");
+  });
+
+  it("treats the removed verbose help flag like an unknown extra token", async () => {
+    const runtime = createGreeterRuntime(SCHEMA_PATH);
+    const response = parseStdout(
+      (await runCli(runtime, ["greet", "--help", "--json", "--verbose"])).stdout
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "METHOD_NOT_FOUND");
+    assert.match(response.error.message, /Unknown command: greet --verbose/);
+  });
+
+  it("ignores a leading script-runner separator before top-level commands", async () => {
+    const runtime = createGreeterRuntime(SCHEMA_PATH);
+    const helpJson = parseStdout(
+      (await runCli(runtime, ["--", "greet", "--help", "--json"])).stdout
+    );
+    const command = parseStdout(
+      (await runCli(runtime, ["--", "greet", "Ada", "-s"])).stdout
+    );
+
+    assert.equal(helpJson.payload_schema.name.type, "string");
+    assert.equal(command.ok, true);
+    assert.deepEqual(command.result, { message: "HELLO, ADA!" });
   });
 
   it("returns a stable machine-parseable error envelope", async () => {
@@ -186,20 +230,17 @@ describe("cmdproto runtime", () => {
         await runCli(runtime, [
           "cmdproto",
           "execute",
+          "missing",
           "--json",
-          JSON.stringify({
-            method: "greeter.v1.GreeterService.Missing",
-            params: {},
-            requestId: "err-1"
-          })
+          "{}"
         ])
       ).stdout
     );
 
-    assert.deepEqual(Object.keys(response).sort(), ["error", "ok", "requestId"]);
+    assert.deepEqual(Object.keys(response).sort(), ["error", "ok"]);
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "METHOD_NOT_FOUND");
-    assert.equal(response.requestId, "err-1");
+    assert.match(response.error.message, /Unknown command: missing/);
   });
 });
 
@@ -264,15 +305,12 @@ describe("cmdproto schema validation", () => {
     );
   });
 
-  it("rejects reserved verbose long flags", () => {
+  it("allows verbose long flags now that cmdproto no longer uses them", () => {
     const method = mockMethod("session create", [
       mockField("output", { flag: { long: "verbose", short: "v" } })
     ]);
 
-    assert.throws(
-      () => validateMethodSpecs([method]),
-      /reserved long flag "--verbose"/
-    );
+    assert.doesNotThrow(() => validateMethodSpecs([method]));
   });
 });
 
@@ -296,7 +334,7 @@ function mockMethod(
         {
           command: path,
           description: "test",
-          requestJson: "{\"method\":\"test.v1.TestService.Call\",\"params\":{}}"
+          requestJson: "{}"
         }
       ],
       hidden: false,
