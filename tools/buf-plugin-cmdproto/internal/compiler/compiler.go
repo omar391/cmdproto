@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -24,12 +25,14 @@ import (
 const (
 	commandOptionName = protoreflect.FullName("cmdproto.v1.command")
 	paramOptionName   = protoreflect.FullName("cmdproto.v1.param")
+	messageJSONSchemaOptionName = protoreflect.FullName("cmdproto.v1.message_json_schema")
+	fieldJSONSchemaOptionName   = protoreflect.FullName("cmdproto.v1.field_json_schema")
 
 	manifestVersion = 1
-	helpJSONVersion = 1
+	helpJSONVersion = 2
 
 	executeName    = "cmdproto execute"
-	executeUsage   = "cmdproto execute <path> --json '<payload>'"
+	executeUsage   = "cmdproto execute <path> --json <json|@file|@->"
 	executeSummary = "Execute a machine payload for a command path."
 )
 
@@ -48,8 +51,10 @@ type Issue struct {
 }
 
 type extensionRegistry struct {
-	commandOption protoreflect.ExtensionDescriptor
-	paramOption   protoreflect.ExtensionDescriptor
+	commandOption           protoreflect.ExtensionDescriptor
+	paramOption             protoreflect.ExtensionDescriptor
+	messageJSONSchemaOption protoreflect.ExtensionDescriptor
+	fieldJSONSchemaOption   protoreflect.ExtensionDescriptor
 }
 
 type commandBinding struct {
@@ -206,6 +211,8 @@ func buildRegistry(files []protoreflect.FileDescriptor) (*protoregistry.Files, e
 func newExtensionRegistry(files []protoreflect.FileDescriptor) *extensionRegistry {
 	var commandOption protoreflect.ExtensionDescriptor
 	var paramOption protoreflect.ExtensionDescriptor
+	var messageJSONSchemaOption protoreflect.ExtensionDescriptor
+	var fieldJSONSchemaOption protoreflect.ExtensionDescriptor
 
 	for _, file := range files {
 		if commandOption == nil {
@@ -214,10 +221,18 @@ func newExtensionRegistry(files []protoreflect.FileDescriptor) *extensionRegistr
 		if paramOption == nil {
 			paramOption = findExtensionDescriptorInFile(file, paramOptionName)
 		}
+		if messageJSONSchemaOption == nil {
+			messageJSONSchemaOption = findExtensionDescriptorInFile(file, messageJSONSchemaOptionName)
+		}
+		if fieldJSONSchemaOption == nil {
+			fieldJSONSchemaOption = findExtensionDescriptorInFile(file, fieldJSONSchemaOptionName)
+		}
 		if commandOption != nil && paramOption != nil {
 			return &extensionRegistry{
-				commandOption: commandOption,
-				paramOption:   paramOption,
+				commandOption:           commandOption,
+				paramOption:             paramOption,
+				messageJSONSchemaOption: messageJSONSchemaOption,
+				fieldJSONSchemaOption:   fieldJSONSchemaOption,
 			}
 		}
 	}
@@ -676,11 +691,36 @@ func validateExampleCommand(
 	if match == nil {
 		return "", fmt.Errorf("must start with the command path or an alias")
 	}
+	if requestJSON, ok, err := parseExampleCommandJSON(tokens[len(match.tokens):]); err != nil {
+		return "", err
+	} else if ok {
+		return validateExampleRequestJSON(method, requestJSON, ctx)
+	}
 	params, err := parseArguments(method, tokens[len(match.tokens):])
 	if err != nil {
 		return "", err
 	}
 	return canonicalizeJSONMessage(method.input, params, ctx)
+}
+
+func parseExampleCommandJSON(argv []string) (string, bool, error) {
+	if len(argv) == 0 {
+		return "", false, nil
+	}
+	if len(argv) != 2 || argv[0] != "--json" {
+		return "", false, nil
+	}
+	if argv[1] == "@-" {
+		return "", false, fmt.Errorf("command examples cannot use --json @-")
+	}
+	if strings.HasPrefix(argv[1], "@") {
+		body, err := os.ReadFile(argv[1][1:])
+		if err != nil {
+			return "", false, err
+		}
+		return string(body), true, nil
+	}
+	return argv[1], true, nil
 }
 
 func validateExampleRequestJSON(
@@ -1279,7 +1319,10 @@ func buildManifest(
 				payloadJSON:  canonical,
 			})
 		}
-		command := buildRuntimeCommand(method, payloads, appName)
+		command, err := buildRuntimeCommand(method, payloads, appName, ctx)
+		if err != nil {
+			return nil, nil, err
+		}
 		commands = append(commands, command)
 	}
 	manifest.SetCommands(commands)
@@ -1315,7 +1358,8 @@ func buildRuntimeCommand(
 	method *methodSpec,
 	examples []compiledExample,
 	appName string,
-) *cmdprotov1.RuntimeCommand {
+	ctx *schemaContext,
+) (*cmdprotov1.RuntimeCommand, error) {
 	command := &cmdprotov1.RuntimeCommand{}
 	command.SetMethod(method.name)
 	command.SetService(method.service)
@@ -1347,9 +1391,13 @@ func buildRuntimeCommand(
 	command.SetExamples(commandExamples)
 	help := &cmdprotov1.RuntimeHelpSurface{}
 	help.SetText(renderMethodHelp(method, command))
-	help.SetJson(mustJSONString(buildCommandHelpJSON(command)))
+	commandHelpJSON, err := buildCommandHelpJSON(method, command, ctx)
+	if err != nil {
+		return nil, err
+	}
+	help.SetJson(mustJSONString(commandHelpJSON))
 	command.SetHelp(help)
-	return command
+	return command, nil
 }
 
 func normalizedAliases(aliases []string) []string {
@@ -1539,7 +1587,7 @@ func renderPlaceholder(fieldName string) string {
 var nonAlphaNum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 func renderExecuteTemplate(method *methodSpec) string {
-	return "cmdproto execute " + preferredMachinePath(method) + " --json '<payload>'"
+	return "cmdproto execute " + preferredMachinePath(method) + " --json <json|@file|@->"
 }
 
 func renderAppHumanCommand(appName, command string) string {
@@ -1611,7 +1659,7 @@ func renderRootHelp(methods []*methodSpec) string {
 		"",
 		"Notes:",
 		"  --help includes machine execution notes and type names.",
-		"  --help --json prints compact payload-schema JSON.",
+		"  --help --json prints machine-readable command contract JSON.",
 		"",
 		"Machine control:",
 		"  "+executeUsage+" "+executeSummary,
@@ -1636,7 +1684,7 @@ func renderExecuteHelp() string {
 		"",
 		"Notes:",
 		"  <path> resolves a declared command path or alias.",
-		"  <payload> is the JSON params object for that command.",
+		"  <json> can be inline JSON, @file, or @- for stdin.",
 	}, "\n") + "\n"
 }
 
@@ -1780,7 +1828,11 @@ func buildExecuteHelpSummaryJSON() map[string]any {
 	}
 }
 
-func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) any {
+func buildCommandHelpJSON(
+	method *methodSpec,
+	command *cmdprotov1.RuntimeCommand,
+	ctx *schemaContext,
+) (any, error) {
 	payloadSchema := make(map[string]any)
 	for _, param := range command.GetParams() {
 		if param.GetHidden() {
@@ -1794,6 +1846,10 @@ func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) any {
 		}
 		payloadSchema[param.GetJsonName()] = entry
 	}
+	payloadJSONSchema, err := buildMessageJSONSchema(method.input, ctx)
+	if err != nil {
+		return nil, err
+	}
 	examples := make([]map[string]any, 0, len(command.GetExamples()))
 	for _, example := range command.GetExamples() {
 		entry := map[string]any{
@@ -1805,12 +1861,187 @@ func buildCommandHelpJSON(command *cmdprotov1.RuntimeCommand) any {
 		examples = append(examples, entry)
 	}
 	return struct {
-		PayloadSchema map[string]any   `json:"payload_schema"`
-		Examples      []map[string]any `json:"examples"`
+		Method          string         `json:"method"`
+		Path            string         `json:"path"`
+		Aliases         []string       `json:"aliases,omitempty"`
+		InputType       string         `json:"input_type"`
+		OutputType      string         `json:"output_type"`
+		MachineUsage    string         `json:"machine_usage"`
+		PayloadJSONSchema any          `json:"payload_json_schema"`
+		PayloadSchema   map[string]any `json:"payload_schema"`
+		Examples        []map[string]any `json:"examples"`
 	}{
-		PayloadSchema: payloadSchema,
-		Examples:      examples,
+		Method:            command.GetMethod(),
+		Path:              command.GetPreferredMachinePath(),
+		Aliases:           command.GetAliases(),
+		InputType:         command.GetInputType(),
+		OutputType:        command.GetOutputType(),
+		MachineUsage:      command.GetMachineUsage(),
+		PayloadJSONSchema: payloadJSONSchema,
+		PayloadSchema:     payloadSchema,
+		Examples:          examples,
+	}, nil
+}
+
+func buildMessageJSONSchema(
+	message protoreflect.MessageDescriptor,
+	ctx *schemaContext,
+) (any, error) {
+	if override, ok, err := messageJSONSchemaOverride(message, ctx); err != nil {
+		return nil, err
+	} else if ok {
+		return override, nil
 	}
+
+	required := make([]string, 0)
+	properties := make(map[string]any)
+	fields := message.Fields()
+	for index := 0; index < fields.Len(); index += 1 {
+		field := fields.Get(index)
+		if field.Cardinality() == protoreflect.Required {
+			required = append(required, string(field.JSONName()))
+		}
+		schema, err := buildFieldJSONSchema(field, ctx)
+		if err != nil {
+			return nil, err
+		}
+		properties[string(field.JSONName())] = schema
+	}
+
+	return map[string]any{
+		"$schema":              "https://json-schema.org/draft/2020-12/schema",
+		"$id":                  "cmdproto://message/" + string(message.FullName()),
+		"title":                string(message.FullName()),
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             required,
+		"properties":           properties,
+	}, nil
+}
+
+func buildFieldJSONSchema(
+	field protoreflect.FieldDescriptor,
+	ctx *schemaContext,
+) (any, error) {
+	if override, ok, err := fieldJSONSchemaOverride(field, ctx); err != nil {
+		return nil, err
+	} else if ok {
+		return override, nil
+	}
+
+	switch {
+	case field.IsMap():
+		valueSchema, err := buildFieldJSONSchema(field.MapValue(), ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"type":                 "object",
+			"additionalProperties": valueSchema,
+		}, nil
+	case field.IsList():
+		itemSchema, err := buildListItemJSONSchema(field, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"type":  "array",
+			"items": itemSchema,
+		}, nil
+	case field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind:
+		return buildMessageJSONSchema(field.Message(), ctx)
+	case field.Kind() == protoreflect.EnumKind:
+		return enumJSONSchema(field.Enum()), nil
+	default:
+		return scalarJSONSchema(field.Kind()), nil
+	}
+}
+
+func buildListItemJSONSchema(
+	field protoreflect.FieldDescriptor,
+	ctx *schemaContext,
+) (any, error) {
+	switch field.Kind() {
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return buildMessageJSONSchema(field.Message(), ctx)
+	case protoreflect.EnumKind:
+		return enumJSONSchema(field.Enum()), nil
+	default:
+		return scalarJSONSchema(field.Kind()), nil
+	}
+}
+
+func enumJSONSchema(enum protoreflect.EnumDescriptor) map[string]any {
+	values := make([]string, 0, enum.Values().Len())
+	for index := 0; index < enum.Values().Len(); index += 1 {
+		values = append(values, string(enum.Values().Get(index).Name()))
+	}
+	return map[string]any{
+		"type": "string",
+		"enum": values,
+	}
+}
+
+func scalarJSONSchema(kind protoreflect.Kind) map[string]any {
+	switch kind {
+	case protoreflect.BoolKind:
+		return map[string]any{"type": "boolean"}
+	case protoreflect.DoubleKind,
+		protoreflect.FloatKind,
+		protoreflect.Int32Kind,
+		protoreflect.Uint32Kind,
+		protoreflect.Sint32Kind,
+		protoreflect.Fixed32Kind,
+		protoreflect.Sfixed32Kind:
+		return map[string]any{"type": "number"}
+	default:
+		return map[string]any{"type": "string"}
+	}
+}
+
+func messageJSONSchemaOverride(
+	message protoreflect.MessageDescriptor,
+	ctx *schemaContext,
+) (any, bool, error) {
+	if ctx == nil || ctx.ext == nil || ctx.ext.messageJSONSchemaOption == nil {
+		return nil, false, nil
+	}
+	options, _ := message.Options().(*descriptorpb.MessageOptions)
+	extension, ok, err := getExtensionMessage(options, ctx.ext.messageJSONSchemaOption)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return parseJSONSchemaOverride(extension, message.FullName())
+}
+
+func fieldJSONSchemaOverride(
+	field protoreflect.FieldDescriptor,
+	ctx *schemaContext,
+) (any, bool, error) {
+	if ctx == nil || ctx.ext == nil || ctx.ext.fieldJSONSchemaOption == nil {
+		return nil, false, nil
+	}
+	options, _ := field.Options().(*descriptorpb.FieldOptions)
+	extension, ok, err := getExtensionMessage(options, ctx.ext.fieldJSONSchemaOption)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return parseJSONSchemaOverride(extension, field.FullName())
+}
+
+func parseJSONSchemaOverride(
+	extension protoreflect.Message,
+	owner protoreflect.FullName,
+) (any, bool, error) {
+	raw := strings.TrimSpace(getStringField(extension, "json"))
+	if raw == "" {
+		return nil, false, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, false, fmt.Errorf("%s json schema override is not valid JSON: %w", owner, err)
+	}
+	return parsed, true, nil
 }
 
 func mustJSONString(value any) string {

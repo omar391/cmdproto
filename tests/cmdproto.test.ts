@@ -63,6 +63,19 @@ describe("cmdproto descriptors", () => {
       }
     });
   });
+
+  it("accepts direct command --json payloads as a full request shortcut", () => {
+    const schema = loadSchemaFromFile(SCHEMA_PATH);
+    const request = parseHumanCommand(schema, ["greet", "--json", GREETER_REQUEST_JSON]);
+
+    assert.deepEqual(request, {
+      method: GREETER_METHOD,
+      params: {
+        name: "Ada",
+        shout: true
+      }
+    });
+  });
 });
 
 describe("cmdproto runtime", () => {
@@ -70,6 +83,9 @@ describe("cmdproto runtime", () => {
     const runtime = createGreeterRuntime(SCHEMA_PATH);
 
     const human = parseStdout((await runCli(runtime, ["greet", "Ada", "--shout"])).stdout);
+    const humanJson = parseStdout(
+      (await runCli(runtime, ["greet", "--json", GREETER_REQUEST_JSON])).stdout
+    );
     const machine = parseStdout(
       (
         await runCli(runtime, [
@@ -84,8 +100,58 @@ describe("cmdproto runtime", () => {
 
     assert.equal(human.ok, true);
     assert.deepEqual(human.result, { message: "HELLO, ADA!" });
+    assert.equal(humanJson.ok, true);
+    assert.deepEqual(humanJson.result, human.result);
     assert.equal(machine.ok, true);
     assert.deepEqual(machine.result, human.result);
+  });
+
+  it("executes machine JSON from stdin when --json @- is used", () => {
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "examples/greeter/src/app.ts",
+        "cmdproto",
+        "execute",
+        "greet",
+        "--json",
+        "@-"
+      ],
+      {
+        cwd: process.cwd(),
+        input: GREETER_REQUEST_JSON,
+        encoding: "utf8"
+      }
+    );
+    const response = parseStdout(stdout);
+
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.result, { message: "HELLO, ADA!" });
+  });
+
+  it("executes direct command JSON from stdin when --json @- is used", () => {
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "examples/greeter/src/app.ts",
+        "greet",
+        "--json",
+        "@-"
+      ],
+      {
+        cwd: process.cwd(),
+        input: GREETER_REQUEST_JSON,
+        encoding: "utf8"
+      }
+    );
+    const response = parseStdout(stdout);
+
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.result, { message: "HELLO, ADA!" });
   });
 
   it("rejects undeclared methods", async () => {
@@ -128,6 +194,24 @@ describe("cmdproto runtime", () => {
     assert.equal(result.statusCode, 1);
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "INVALID_ARGUMENT");
+  });
+
+  it("rejects bare --json without an explicit JSON source", async () => {
+    const runtime = createGreeterRuntime(SCHEMA_PATH);
+    const response = parseStdout(
+      (
+        await runCli(runtime, [
+          "cmdproto",
+          "execute",
+          "greet",
+          "--json"
+        ])
+      ).stdout
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "INVALID_ARGUMENT");
+    assert.match(response.error.message, /Usage: cmdproto execute <path> --json <json\|@file\|@->/);
   });
 
   it("fails fast when the runtime manifest is missing", () => {
@@ -173,10 +257,10 @@ describe("cmdproto runtime", () => {
     assert.doesNotMatch(help, /--json --verbose/);
     assert.match(help, /cmdproto execute <path> --json/);
     assert.equal(globalJson.commands[0].path, "greet");
-    assert.equal(globalJson.execute.usage, "cmdproto execute <path> --json '<payload>'");
+    assert.equal(globalJson.execute.usage, "cmdproto execute <path> --json <json|@file|@->");
     assert.match(commandHelp.stdout, /Usage:\n  greet <NAME> \[-s, --shout\]/);
     assert.match(commandHelp.stdout, /Machine method:\n  greeter\.v1\.GreeterService\.SayHello/);
-    assert.match(commandHelp.stdout, /Machine execute:\n  cmdproto execute greet --json '<payload>'/);
+    assert.match(commandHelp.stdout, /Machine execute:\n  cmdproto execute greet --json <json\|@file\|@->/);
     assert.match(commandHelp.stdout, /Payload type:\n  greeter\.v1\.SayHelloRequest/);
     assert.match(commandHelp.stdout, /Result type:\n  greeter\.v1\.SayHelloResponse/);
     assert.match(commandHelp.stdout, /Parameters:\n  CLI param\s+JSON param\s+Position\s+Type\s+Description/);
@@ -184,7 +268,15 @@ describe("cmdproto runtime", () => {
     assert.match(commandHelp.stdout, /-s, --shout\s+shout\s+-\s+boolean\s+Uppercase the greeting\./);
     assert.match(commandHelp.stdout, /Examples:\n  Description\s+Normal cmd\s+JSON cmd/);
     assert.match(commandHelp.stdout, /Render a loud greeting\.\s+greeter greet Ada -s\s+greeter cmdproto execute greet --json '\{"name":"Ada","shout":true\}'/);
-    assert.ok(!("method" in commandJson));
+    assert.equal(commandJson.method, GREETER_METHOD);
+    assert.equal(commandJson.path, "greet");
+    assert.equal(commandJson.input_type, "greeter.v1.SayHelloRequest");
+    assert.equal(commandJson.output_type, "greeter.v1.SayHelloResponse");
+    assert.equal(commandJson.machine_usage, "cmdproto execute greet --json <json|@file|@->");
+    assert.equal(commandJson.payload_json_schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+    assert.equal(commandJson.payload_json_schema.type, "object");
+    assert.equal(commandJson.payload_json_schema.properties.name.type, "string");
+    assert.equal(commandJson.payload_json_schema.properties.shout.type, "boolean");
     assert.equal(commandJson.payload_schema.name.type, "string");
     assert.equal(commandJson.payload_schema.shout.type, "boolean");
     assert.equal(commandJson.payload_schema.name.help, "Name to greet.");
@@ -194,6 +286,11 @@ describe("cmdproto runtime", () => {
     assert.ok(!("shortFlag" in commandJson.payload_schema.shout));
     assert.equal(commandJson.examples[0].description, "Render a loud greeting.");
     assert.equal(commandJson.examples[0].cmd, GREETER_EXECUTE_CMD);
+    assert.ok(
+      commandJsonStdout.indexOf('"payload_json_schema"') <
+        commandJsonStdout.indexOf('"payload_schema"'),
+      "help JSON should render payload_json_schema before payload_schema"
+    );
     assert.ok(
       commandJsonStdout.indexOf('"payload_schema"') <
         commandJsonStdout.indexOf('"examples"'),

@@ -101,6 +101,14 @@ interface RuntimeCommandSpec {
   paramByJsonName: Map<string, RuntimeParam>;
 }
 
+type SchemaJsonField = DescField & {
+  mapValue?: DescField;
+  listKind?: "message" | "enum" | "scalar";
+  message?: DescMessage;
+  enum?: { values: Array<{ name: string }> };
+  scalar?: ScalarType;
+};
+
 export interface CommandRequestJson {
   method: string;
   params?: JsonValue;
@@ -166,7 +174,7 @@ const RESERVED_LONG_FLAGS = new Set(["help", "json"]);
 const RESERVED_SHORT_FLAGS = new Set(["h"]);
 const HELP_FLAG = "--help";
 const JSON_FLAG = "--json";
-const EXECUTE_USAGE = "cmdproto execute <path> --json '<payload>'";
+const EXECUTE_USAGE = "cmdproto execute <path> --json <json|@file|@->";
 const EXECUTE_SUMMARY = "Execute a machine payload for a command path.";
 
 interface CommandBinding {
@@ -861,12 +869,12 @@ export async function executeApp({
   schemaPath = getDefaultSchemaPath(),
   manifestPath = getDefaultManifestPath(),
   argv = process.argv.slice(2),
-  stdin = ""
+  stdin
 }: RunMainOptions): Promise<CliResult> {
   // The app runtime stays transport-neutral. Today `runCli()` is the one-shot
   // stdio adapter; future HTTP and streaming adapters should sit beside it.
   const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath);
-  return runCli(runtime, argv, stdin);
+  return runCli(runtime, argv, await resolveCliStdin(argv, stdin));
 }
 
 export async function runMain(options: RunMainOptions): Promise<CliResult> {
@@ -894,7 +902,7 @@ export async function runCli(
       return controlResult;
     }
 
-    const request = parseManifestHumanCommand(runtime, normalizedArgv);
+    const request = parseManifestHumanCommand(runtime, normalizedArgv, stdin);
     const response = await runtime.dispatch(request);
     return jsonEnvelopeResult(response, response.ok ? 0 : 1);
   } catch (error) {
@@ -974,7 +982,8 @@ function buildRuntimeCommandSpecs(
 
 function parseManifestHumanCommand(
   runtime: CmdProtoRuntime,
-  argv: string[]
+  argv: string[],
+  stdin = ""
 ): CommandRequestJson {
   const match = findRuntimeCommand(runtime.commands, argv);
   if (!match) {
@@ -983,7 +992,11 @@ function parseManifestHumanCommand(
 
   return {
     method: match.command.manifest.method,
-    params: parseManifestArguments(match.command, argv.slice(match.tokens.length))
+    params: parseManifestArguments(
+      match.command,
+      argv.slice(match.tokens.length),
+      stdin
+    )
   };
 }
 
@@ -1018,8 +1031,14 @@ function findExactRuntimeCommand(
 
 function parseManifestArguments(
   command: RuntimeCommandSpec,
-  argv: string[]
+  argv: string[],
+  stdin = ""
 ): JsonObject {
+  const jsonRequest = readCommandJsonRequest(argv, stdin);
+  if (jsonRequest !== undefined) {
+    return jsonRequest;
+  }
+
   const params: JsonObject = {};
   const positionals = (command.manifest.parsePlan?.positionalJsonNames ?? []).map((jsonName) => {
     const param = command.paramByJsonName.get(jsonName);
@@ -1152,14 +1171,19 @@ function parseManifestValueByType(
 
 export function parseHumanCommand(
   schema: CmdProtoSchema,
-  argv: string[]
+  argv: string[],
+  stdin = ""
 ): CommandRequestJson {
   const match = findCommand(schema.methods, argv);
   if (!match) {
     throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${argv.join(" ")}`);
   }
 
-  const params = parseArguments(match.method, argv.slice(match.tokens.length));
+  const params = parseArguments(
+    match.method,
+    argv.slice(match.tokens.length),
+    stdin
+  );
   return {
     method: match.method.name,
     params
@@ -1202,7 +1226,7 @@ async function runCmdprotoCommand(
     const executeArgv = argv.slice(2);
 
     const jsonIndex = executeArgv.indexOf(JSON_FLAG);
-    if (jsonIndex < 1 || jsonIndex < executeArgv.length - 2 || jsonIndex > executeArgv.length - 1) {
+    if (jsonIndex < 1 || jsonIndex !== executeArgv.length - 2) {
       throw new CmdProtoError("INVALID_ARGUMENT", `Usage: ${EXECUTE_USAGE}`);
     }
 
@@ -1212,7 +1236,10 @@ async function runCmdprotoCommand(
       throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${pathTokens.join(" ")}`);
     }
 
-    const params = parseJsonRequest(executeArgv[jsonIndex + 1] ?? stdin) as JsonValue;
+    const params = parseJsonRequestInput(
+      executeArgv[jsonIndex + 1],
+      stdin
+    ) as JsonValue;
     const response = await runtime.dispatch({
       method: match.command.manifest.method,
       params
@@ -1336,6 +1363,13 @@ function buildMinimalGlobalHelpJson(schema: CmdProtoSchema): JsonObject {
 
 function buildMinimalMethodHelpJson(method: MethodSpec): JsonObject {
   return {
+    method: method.name,
+    path: getPreferredMachineCommandPath(method),
+    ...(method.command.alias.length > 0 ? { aliases: method.command.alias } : {}),
+    input_type: method.input.typeName,
+    output_type: method.output.typeName,
+    machine_usage: renderExecuteTemplate(method),
+    payload_json_schema: buildMessageJsonSchema(method.input),
     payload_schema: buildMinimalFieldsJson(method),
     examples: method.command.example.map((example) => buildMinimalExampleHelpJson(method, example))
   };
@@ -1445,7 +1479,7 @@ function renderExecuteHelp(): string {
     "",
     "Notes:",
     "  <path> resolves a declared command path or alias.",
-    "  <payload> is the JSON params object for that command."
+    "  <json> can be inline JSON, @file, or @- for stdin."
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -1574,7 +1608,7 @@ function parseJsonRequest(raw: string): unknown {
 }
 
 function renderExecuteTemplate(method: MethodSpec): string {
-  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json '<payload>'`;
+  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json <json|@file|@->`;
 }
 
 function renderExecuteExampleCommand(method: MethodSpec, requestJson: string): string {
@@ -1582,6 +1616,143 @@ function renderExecuteExampleCommand(method: MethodSpec, requestJson: string): s
   return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json ${quoteShellArgument(
     JSON.stringify(payload)
   )}`;
+}
+
+function buildMessageJsonSchema(message: DescMessage): JsonObject {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: `cmdproto://message/${message.typeName}`,
+    title: message.typeName,
+    type: "object",
+    additionalProperties: false,
+    required: message.fields
+      .filter((field) => field.proto.label === 2)
+      .map((field) => field.jsonName),
+    properties: Object.fromEntries(
+      message.fields.map((field) => [field.jsonName, buildFieldJsonSchema(field)])
+    ) as JsonObject
+  };
+}
+
+function buildFieldJsonSchema(field: DescField): JsonObject {
+  const schemaField = field as SchemaJsonField;
+  if (field.fieldKind === "map") {
+    return {
+      type: "object",
+      additionalProperties: schemaField.mapValue
+        ? buildFieldJsonSchema(schemaField.mapValue)
+        : true
+    };
+  }
+
+  if (field.fieldKind === "list") {
+    return {
+      type: "array",
+      items: buildListItemJsonSchema(field)
+    };
+  }
+
+  if (field.fieldKind === "message") {
+    return buildMessageJsonSchema(schemaField.message as DescMessage);
+  }
+
+  if (field.fieldKind === "enum") {
+    return {
+      type: "string",
+      enum: (schemaField.enum?.values ?? []).map((value) => value.name)
+    };
+  }
+
+  return buildScalarJsonSchema(schemaField.scalar as ScalarType);
+}
+
+function buildListItemJsonSchema(field: DescField): JsonObject {
+  const schemaField = field as SchemaJsonField;
+  switch (schemaField.listKind) {
+    case "message":
+      return buildMessageJsonSchema(schemaField.message as DescMessage);
+    case "enum":
+      return {
+        type: "string",
+        enum: (schemaField.enum?.values ?? []).map((value) => value.name)
+      };
+    case "scalar":
+      return buildScalarJsonSchema(schemaField.scalar as ScalarType);
+    default:
+      return { type: "object" };
+  }
+}
+
+function buildScalarJsonSchema(scalar: ScalarType): JsonObject {
+  switch (scalar) {
+    case ScalarType.BOOL:
+      return { type: "boolean" };
+    case ScalarType.DOUBLE:
+    case ScalarType.FLOAT:
+    case ScalarType.INT32:
+    case ScalarType.UINT32:
+    case ScalarType.SINT32:
+    case ScalarType.FIXED32:
+    case ScalarType.SFIXED32:
+      return { type: "number" };
+    case ScalarType.INT64:
+    case ScalarType.UINT64:
+    case ScalarType.SINT64:
+    case ScalarType.FIXED64:
+    case ScalarType.SFIXED64:
+    case ScalarType.STRING:
+    case ScalarType.BYTES:
+    default:
+      return { type: "string" };
+  }
+}
+
+function parseJsonRequestInput(spec: string | undefined, stdin: string): unknown {
+  if (spec === undefined) {
+    throw new CmdProtoError("INVALID_REQUEST", "Missing JSON request");
+  }
+  if (spec === "@-") {
+    return parseJsonRequest(stdin);
+  }
+  if (spec.startsWith("@")) {
+    try {
+      return parseJsonRequest(readFileSync(spec.slice(1), "utf8"));
+    } catch (error) {
+      throw new CmdProtoError("INVALID_REQUEST", formatError(error));
+    }
+  }
+  return parseJsonRequest(spec);
+}
+
+async function resolveCliStdin(
+  argv: string[],
+  stdin: string | undefined
+): Promise<string> {
+  if (stdin !== undefined) {
+    return stdin;
+  }
+  const normalizedArgv = normalizeCliArgv(argv);
+  if (!commandReadsStdin(normalizedArgv) || process.stdin.isTTY) {
+    return "";
+  }
+  return readProcessStdin();
+}
+
+function commandReadsStdin(argv: string[]): boolean {
+  if (argv[0] === "cmdproto" && argv[1] === "execute") {
+    const jsonIndex = argv.indexOf(JSON_FLAG);
+    return jsonIndex >= 0 && argv[jsonIndex + 1] === "@-";
+  }
+  const spec = directCommandJsonSpec(argv.slice(-2));
+  return !argv.includes(HELP_FLAG) && spec === "@-";
+}
+
+async function readProcessStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function normalizeExamplePayload(rawRequest: string): JsonValue {
@@ -1661,7 +1832,16 @@ function startsWith(argv: string[], prefix: string[]): boolean {
   return prefix.every((token, index) => argv[index] === token);
 }
 
-function parseArguments(method: MethodSpec, argv: string[]): JsonObject {
+function parseArguments(
+  method: MethodSpec,
+  argv: string[],
+  stdin = ""
+): JsonObject {
+  const jsonRequest = readCommandJsonRequest(argv, stdin);
+  if (jsonRequest !== undefined) {
+    return jsonRequest;
+  }
+
   const params: JsonObject = {};
   const positionals = method.fields
     .filter((field) => field.param.positional && !field.param.hidden)
@@ -1797,6 +1977,31 @@ function parseCliValue(field: DescField, raw: string): JsonValue {
   }
 
   throw new CmdProtoError("INVALID_ARGUMENT", `Field ${field.name} is not CLI-scalar`);
+}
+
+function directCommandJsonSpec(argv: string[]): string | undefined {
+  if (argv.length !== 2 || argv[0] !== JSON_FLAG) {
+    return undefined;
+  }
+  return argv[1];
+}
+
+function readCommandJsonRequest(
+  argv: string[],
+  stdin: string
+): JsonObject | undefined {
+  const spec = directCommandJsonSpec(argv);
+  if (spec === undefined) {
+    return undefined;
+  }
+  const payload = parseJsonRequestInput(spec, stdin);
+  if (!isPlainObject(payload)) {
+    throw new CmdProtoError(
+      "INVALID_REQUEST",
+      "Direct command --json payload must be a JSON object"
+    );
+  }
+  return payload as JsonObject;
 }
 
 function parseScalarValue(

@@ -129,6 +129,83 @@ message GreetResponse {
 	if len(commands) != 1 {
 		t.Fatalf("root help command count = %d, want 1", len(commands))
 	}
+
+	commandHelp := map[string]any{}
+	if err := json.Unmarshal([]byte(commandManifest.GetHelp().GetJson()), &commandHelp); err != nil {
+		t.Fatalf("parse command help json: %v", err)
+	}
+	if got, want := commandHelp["machine_usage"], "cmdproto execute greet --json <json|@file|@->"; got != want {
+		t.Fatalf("machine_usage = %v, want %q", got, want)
+	}
+	if _, ok := commandHelp["payload_json_schema"].(map[string]any); !ok {
+		t.Fatalf("payload_json_schema missing from command help json: %#v", commandHelp)
+	}
+}
+
+func TestCompileDescriptorSetBytesAcceptsDirectJSONExampleCommands(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc Greet(GreetRequest) returns (GreetResponse) {
+    option (cmdproto.v1.command) = {
+      path: "greet"
+      summary: "Render a greeting."
+      example: {
+        command: "greet --json {\"name\":\"Ada\",\"shout\":true}"
+        description: "Render a loud greeting."
+        request_json: "{\"name\":\"Ada\",\"shout\":true}"
+      }
+    };
+  }
+}
+
+message GreetRequest {
+  string name = 1 [
+    (cmdproto.v1.param) = {
+      positional: { index: 1 }
+      help: "Name to greet."
+    }
+  ];
+  bool shout = 2 [
+    (cmdproto.v1.param) = {
+      flag: {
+        long: "shout"
+        short: "s"
+      }
+      help: "Uppercase the greeting."
+    }
+  ];
+}
+
+message GreetResponse {
+  string message = 1;
+}
+`)
+
+	schemaPath := filepath.Join(workspace, "schema.binpb")
+	command := exec.Command("buf", "build", filepath.Join(workspace, "proto"), "--as-file-descriptor-set", "-o", schemaPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("buf build failed:\n%s", output)
+	}
+
+	schemaBytes, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read schema.binpb: %v", err)
+	}
+
+	_, issues, err := CompileDescriptorSetBytes(schemaBytes, "greeter")
+	if err != nil {
+		t.Fatalf("compile manifest: %v", err)
+	}
+	if len(issues) > 0 {
+		t.Fatalf("expected no issues, got %v", issues)
+	}
 }
 
 func writeWorkspace(t *testing.T, appProto string) string {

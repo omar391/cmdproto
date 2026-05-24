@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"cmdproto.tools/buf-plugin-cmdproto/internal/compiler"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -14,10 +15,12 @@ func main() {
 	var appName string
 	var schemaPath string
 	var outPath string
+	var outJSONPath string
 
 	flag.StringVar(&appName, "app-name", "", "App name to prefix rendered examples")
 	flag.StringVar(&schemaPath, "schema", "", "Path to schema.binpb")
 	flag.StringVar(&outPath, "out", "", "Path to write runtime.binpb")
+	flag.StringVar(&outJSONPath, "out-json", "", "Optional path to write runtime manifest JSON")
 	flag.Parse()
 
 	appName = strings.TrimSpace(appName)
@@ -56,5 +59,21 @@ func main() {
 	if err := os.WriteFile(outPath, bytes, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write manifest: %v\n", err)
 		os.Exit(1)
+	}
+	if strings.TrimSpace(outJSONPath) != "" {
+		jsonBytes, err := protojson.MarshalOptions{
+			Indent:          "  ",
+			UseProtoNames:   false,
+			UseEnumNumbers:  false,
+			EmitUnpopulated: true,
+		}.Marshal(manifest)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "encode manifest json: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(outJSONPath, append(jsonBytes, '\n'), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "write manifest json: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

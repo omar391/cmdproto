@@ -12,6 +12,11 @@ extend google.protobuf.MethodOptions {
 
 extend google.protobuf.FieldOptions {
   Param param = 50002;
+  JsonSchema field_json_schema = 50004;
+}
+
+extend google.protobuf.MessageOptions {
+  JsonSchema message_json_schema = 50003;
 }
 
 message Command {
@@ -43,4 +48,8 @@ message Positional {
 message Flag {
   string long = 1;
   string short = 2;
+}
+
+message JsonSchema {
+  string json = 1;
 }
