@@ -1,5 +1,7 @@
 node_modules/
-dist/
+dist/*
+!dist/wasm/
+!dist/wasm/**
 *.tsbuildinfo
 .DS_Store
 

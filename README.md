@@ -56,6 +56,52 @@ same per-command `--help` surface that humans use.
 - `examples/greeter/proto/` is a separate app proto, built as its own schema
   artifact.
 
+## As A Dependency
+
+A consumer can install this repo directly as a git dependency and import the
+runtime as `cmdproto`.
+
+For a local sibling consumer during development, a saved dependency like
+`"cmdproto": "file:../.."` is usually the simplest path.
+
+For a fresh repo setup from git, a direct install like this works too:
+
+```sh
+npm install "cmdproto@git+https://github.com/omar391/cmdproto.git"
+```
+
+After install, run:
+
+```sh
+cmdproto-setup init
+```
+
+That bootstrap step creates a deterministic starter layout in the consumer repo:
+
+- `buf.gen.yaml`
+- `buf.yaml` by default
+- `proto/.../*.proto`
+- `package.json` scripts:
+  - `cmdproto:gen`
+  - `cmdproto:schema`
+
+If the consumer repo is TypeScript, run:
+
+```sh
+cmdproto-setup init --runtime ts
+```
+
+That also creates:
+
+- `src/cmdproto/app.mts`
+- `tsconfig.json` when missing
+- `package.json` script:
+  - `cmdproto:run`
+
+`cmdproto-runtime-manifest` and `cmdproto-buf-plugin` are shipped for consumers
+as package-contained WASM-backed commands, so consumer machines do not need Go
+installed for schema build and lint.
+
 ## Authoring A New App
 
 ```proto
@@ -136,7 +182,7 @@ npm run schema:build:greeter
    positional layouts, prefix-shadowing, and missing or malformed command
    examples during schema authoring.
 4. Buf compiles your `.proto` files into `schema.binpb`, which is a protobuf
-   `FileDescriptorSet`, and the shared Go compiler emits a normalized
+   `FileDescriptorSet`, and the shared compiler emits a normalized
    `runtime.binpb` manifest beside it.
 5. `cmdproto` loads both artifacts at runtime. The manifest drives command
    routing, help output, and human CLI parsing; the descriptor set is only used
@@ -155,7 +201,9 @@ In this repo specifically:
 - `npm run schema:build` builds the library's own `proto/` schema to `dist/schema.binpb` and `dist/runtime.binpb`.
 - `npm run schema:build:greeter` builds the example app schema to `examples/greeter/dist/schema.binpb` and `examples/greeter/dist/runtime.binpb`.
 - `npm run example:greeter -- greet Ada -s` uses the example-owned schema file, not the root one.
-- `buf lint` requires Go locally because the repo-local plugin launcher runs `go run ./tools/buf-plugin-cmdproto/...`.
+- consumer repos do not need Go locally; the package ships the build-time
+  helpers as WASM-backed commands
+- this repo still uses Go to rebuild `dist/wasm/` and to run `npm run test:plugin`
 
 The transport roadmap is tracked in [future_plan.md](/Volumes/Projects/business/AstronLab/omar391/cmdproto/future_plan.md).
 
@@ -169,4 +217,6 @@ npm run example:greeter -- greet Ada -s
 npm run example:greeter -- greet --help
 npm run example:greeter -- greet --help --json
 npm run example:greeter -- cmdproto execute greet --json '{"name":"Ada","shout":true}'
+npm --prefix examples/greeter install
+npm --prefix examples/greeter run check
 ```

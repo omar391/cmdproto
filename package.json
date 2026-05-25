@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "description": "Proto-first ABI boundary toolkit for strict human and machine command interfaces.",
   "type": "module",
-  "private": true,
+  "bin": {
+    "cmdproto-setup": "./scripts/bootstrap.mjs",
+    "cmdproto-buf-plugin": "./scripts/buf-plugin-cmdproto",
+    "cmdproto-runtime-manifest": "./scripts/runtime-manifest.mjs"
+  },
   "engines": {
     "node": ">=22.0.0"
   },
@@ -13,14 +17,26 @@
       "import": "./dist/runtimes/runtime.js"
     }
   },
+  "files": [
+    "README.md",
+    "dist/runtimes",
+    "dist/wasm",
+    "proto",
+    "scripts/bootstrap.mjs",
+    "scripts/buf-plugin-cmdproto",
+    "scripts/run-wasi.mjs",
+    "scripts/runtime-manifest.mjs"
+  ],
   "scripts": {
-    "schema:build": "buf lint proto && mkdir -p dist && buf build proto --as-file-descriptor-set -o dist/schema.binpb && cd tools/buf-plugin-cmdproto && go run ./cmd/runtime-manifest --app-name app --schema ../../dist/schema.binpb --out ../../dist/runtime.binpb",
-    "schema:build:greeter": "buf lint examples/greeter/proto && mkdir -p examples/greeter/dist && buf build examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && cd tools/buf-plugin-cmdproto && go run ./cmd/runtime-manifest --app-name greeter --schema ../../examples/greeter/dist/schema.binpb --out ../../examples/greeter/dist/runtime.binpb",
+    "build:wasm": "mkdir -p dist/wasm && cd tools/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-buf-plugin.wasm ./cmd/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-runtime-manifest.wasm ./cmd/runtime-manifest",
+    "schema:build": "buf lint --config buf.yaml && mkdir -p dist && buf build --config buf.yaml proto --as-file-descriptor-set -o dist/schema.binpb && node ./scripts/runtime-manifest.mjs --app-name app --schema dist/schema.binpb --out dist/runtime.binpb",
+    "schema:build:greeter": "buf lint --config buf.yaml examples/greeter/proto && mkdir -p examples/greeter/dist && buf build --config buf.yaml examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && node ./scripts/runtime-manifest.mjs --app-name greeter --schema examples/greeter/dist/schema.binpb --out examples/greeter/dist/runtime.binpb",
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:plugin": "cd tools/buf-plugin-cmdproto && go test ./...",
     "example:greeter": "npm run schema:build:greeter --silent && tsx examples/greeter/src/app.ts",
-    "check": "buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test && npm run test:plugin"
+    "check": "npm run build:wasm && buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test && npm run test:plugin"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0"

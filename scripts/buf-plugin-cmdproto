@@ -1,8 +1,15 @@
 #!/usr/bin/env sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PLUGIN_DIR="$SCRIPT_DIR/../tools/buf-plugin-cmdproto"
+SOURCE=$0
+while [ -L "$SOURCE" ]; do
+  SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+  TARGET=$(readlink "$SOURCE")
+  case "$TARGET" in
+    /*) SOURCE=$TARGET ;;
+    *) SOURCE=$SOURCE_DIR/$TARGET ;;
+  esac
+done
 
-cd "$PLUGIN_DIR"
-exec go run ./cmd/buf-plugin-cmdproto "$@"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+exec node "$SCRIPT_DIR/run-wasi.mjs" "$SCRIPT_DIR/../dist/wasm/cmdproto-buf-plugin.wasm" "$@"
