@@ -6,7 +6,7 @@
     "cmdproto:gen": "buf generate --template buf.gen.yaml --config buf.yaml proto",
     "cmdproto:schema": "buf lint --config buf.yaml && mkdir -p dist && buf build --config buf.yaml proto --as-file-descriptor-set -o dist/schema.binpb && cmdproto-runtime-manifest --app-name greeter --schema dist/schema.binpb --out dist/runtime.binpb",
     "cmdproto:run": "npm run cmdproto:schema --silent && tsx src/cmdproto/app.mts",
-    "check": "npm run cmdproto:gen && npm run cmdproto:schema && npm run cmdproto:run -- greet Ada -s && npm run cmdproto:run -- cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'"
+    "check": "npm run cmdproto:gen && npm run cmdproto:schema && npm run cmdproto:run -- greet Ada -s && npm run cmdproto:run -- cmdproto execjson greet '{\"name\":\"Ada\",\"shout\":true}'"
   },
   "dependencies": {
     "cmdproto": "file:../.."

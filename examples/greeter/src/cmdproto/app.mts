@@ -7,6 +7,7 @@ import {
 } from "cmdproto";
 
 export const GREETER_METHOD = "greeter.v1.GreeterService.SayHello";
+export const GREETER_CARD_METHOD = "greeter.v1.GreeterService.RenderCard";
 export const GREETER_SCHEMA_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../dist/schema.binpb"
@@ -22,6 +23,18 @@ export const handlers: HandlerMap = {
     const message = `Hello, ${name}!`;
     return {
       message: params.shout ? message.toUpperCase() : message
+    };
+  },
+  [GREETER_CARD_METHOD](params) {
+    const payload =
+      params.payload && typeof params.payload === "object" && !Array.isArray(params.payload)
+        ? (params.payload as Record<string, unknown>)
+        : {};
+    const name = String(payload.name ?? "");
+    const prefix = String(params.prefix ?? "");
+    const message = `${prefix}: Hello, ${name}!`;
+    return {
+      message: payload.shout ? message.toUpperCase() : message
     };
   }
 };

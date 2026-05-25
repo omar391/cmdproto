@@ -8,7 +8,7 @@ This file only covers work that is **not implemented in V1**.
 - Execution is unary: one request in, one final response out.
 - Per-command `--help` and `--help --json` are the public introspection
   surfaces.
-- `cmdproto execute <path> --json` is the machine execution entrypoint.
+- `cmdproto execjson <path> <json|@file|@->` is the machine execution entrypoint.
 
 ## Future adapters
 

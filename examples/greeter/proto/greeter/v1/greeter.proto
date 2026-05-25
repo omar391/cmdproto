@@ -3,7 +3,6 @@ edition = "2024";
 package greeter.v1;
 
 import "cmdproto/v1/options.proto";
-
 service GreeterService {
   rpc SayHello(SayHelloRequest) returns (SayHelloResponse) {
     option (cmdproto.v1.command) = {
@@ -14,6 +13,18 @@ service GreeterService {
         command: "greet Ada -s"
         description: "Render a loud greeting."
         request_json: "{\"name\":\"Ada\",\"shout\":true}"
+      }
+    };
+  }
+
+  rpc RenderCard(RenderCardRequest) returns (RenderCardResponse) {
+    option (cmdproto.v1.command) = {
+      path: "card"
+      summary: "Render a greeting from a structured payload."
+      example: {
+        command: "card --prefix welcome --json {\"name\":\"Ada\",\"shout\":true}"
+        description: "Render a structured card greeting."
+        request_json: "{\"prefix\":\"welcome\",\"payload\":{\"name\":\"Ada\",\"shout\":true}}"
       }
     };
   }
@@ -38,5 +49,30 @@ message SayHelloRequest {
 }
 
 message SayHelloResponse {
+  string message = 1;
+}
+
+message GreetingPayload {
+  string name = 1;
+  bool shout = 2;
+}
+
+message RenderCardRequest {
+  string prefix = 1 [
+    (cmdproto.v1.param) = {
+      flag: { long: "prefix" }
+      help: "Greeting prefix."
+    }
+  ];
+
+  GreetingPayload payload = 2 [
+    (cmdproto.v1.param) = {
+      json: { enabled: true }
+      help: "Structured greeting payload."
+    }
+  ];
+}
+
+message RenderCardResponse {
   string message = 1;
 }

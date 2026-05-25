@@ -56,9 +56,12 @@ export interface FlagOptions {
   short: string;
 }
 
+export interface JsonPayloadOptions {}
+
 export interface ParamOptions {
   positional?: PositionalOptions;
   flag?: FlagOptions;
+  json?: JsonPayloadOptions;
   help: string;
   hidden: boolean;
 }
@@ -121,17 +124,15 @@ export interface CommandErrorJson {
   details?: JsonValue;
 }
 
-export type CommandResponseJson =
-  | {
-      ok: true;
-      result: JsonValue;
-      requestId?: string;
-    }
-  | {
-      ok: false;
-      error: CommandErrorJson;
-      requestId?: string;
-    };
+const COMMAND_OUTCOME = Symbol("cmdproto.commandOutcome");
+
+export interface CommandOutcome {
+  result: JsonValue;
+  statusCode: number;
+  [COMMAND_OUTCOME]: true;
+}
+
+export type CommandHandlerResult = JsonValue | CommandOutcome;
 
 export interface HandlerContext {
   methodName: string;
@@ -142,7 +143,7 @@ export interface HandlerContext {
 export type CmdProtoHandler = (
   params: JsonObject,
   context: HandlerContext
-) => JsonValue | Promise<JsonValue>;
+) => CommandHandlerResult | Promise<CommandHandlerResult>;
 
 export type HandlerMap = Record<string, CmdProtoHandler>;
 
@@ -156,6 +157,7 @@ export interface AppOptions {
   handlers: HandlerMap;
   schemaPath?: string;
   manifestPath?: string;
+  renderHuman?: HumanRenderer;
 }
 
 export interface RunMainOptions extends AppOptions {
@@ -174,8 +176,19 @@ const RESERVED_LONG_FLAGS = new Set(["help", "json"]);
 const RESERVED_SHORT_FLAGS = new Set(["h"]);
 const HELP_FLAG = "--help";
 const JSON_FLAG = "--json";
-const EXECUTE_USAGE = "cmdproto execute <path> --json <json|@file|@->";
-const EXECUTE_SUMMARY = "Execute a machine payload for a command path.";
+const EXECJSON_USAGE = "cmdproto execjson <path> <json|@file|@->";
+const EXECJSON_SUMMARY = "Execute a machine JSON payload for a command path.";
+
+export interface HumanRenderContext {
+  methodName: string;
+  descriptor: DescMethod;
+  request: CommandRequestJson;
+}
+
+export type HumanRenderer = (
+  outcome: CommandOutcome,
+  context: HumanRenderContext
+) => CliResult;
 
 interface CommandBinding {
   key: string;
@@ -195,6 +208,25 @@ export class CmdProtoError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+export function commandOutcome(
+  result: JsonValue,
+  options: { statusCode?: number } = {}
+): CommandOutcome {
+  return {
+    [COMMAND_OUTCOME]: true,
+    result,
+    statusCode: normalizeStatusCode(options.statusCode ?? 0)
+  };
+}
+
+function normalizeStatusCode(value: number): number {
+  return Number.isInteger(value) && value >= 0 && value <= 255 ? value : 1;
+}
+
+function isCommandOutcome(value: unknown): value is CommandOutcome {
+  return isPlainObject(value) && (value as { [COMMAND_OUTCOME]?: true })[COMMAND_OUTCOME] === true;
 }
 
 export function loadSchemaFromFile(path: string): CmdProtoSchema {
@@ -321,10 +353,12 @@ function normalizeCommandOptions(value?: Partial<CommandOptions>): CommandOption
 function normalizeParamOptions(value?: Partial<ParamOptions>): ParamOptions {
   const positional = normalizePositional(value?.positional);
   const flag = normalizeFlag(value?.flag);
+  const json = value?.json !== undefined ? {} : undefined;
 
   return {
     ...(positional ? { positional } : {}),
     ...(flag ? { flag } : {}),
+    ...(json ? { json } : {}),
     help: value?.help ?? "",
     hidden: value?.hidden ?? false
   };
@@ -410,6 +444,9 @@ function validateMethodExamples(method: MethodSpec, registry?: FileRegistry): vo
     if (!command) {
       throw new Error(`${method.name} has a cmdproto example with an empty command`);
     }
+    if (splitCommandPath(command)[0] === "cmdproto") {
+      throw new Error(`${method.name} example "${command}" must be human command syntax, not cmdproto control syntax`);
+    }
 
     const requestJson = example.requestJson.trim();
     if (!requestJson) {
@@ -481,6 +518,10 @@ export function renderMethodUsage(method: MethodSpec): string {
     parts.push(`[${names.join(", ")}]`);
   }
 
+  if (getJsonPayloadField(method)) {
+    parts.push("[--json <json|@file|@->]");
+  }
+
   return parts.join(" ");
 }
 
@@ -534,10 +575,11 @@ function validateMethodFields(method: MethodSpec): number {
   for (const field of method.fields) {
     const positional = field.param.positional?.index;
     const flag = field.param.flag;
+    const json = field.param.json;
 
-    if (positional && flag) {
+    if ([Boolean(positional), Boolean(flag), Boolean(json)].filter(Boolean).length > 1) {
       throw new Error(
-        `${method.name}.${field.name} cannot be both positional and flag-bound in cmdproto`
+        `${method.name}.${field.name} can only use one cmdproto binding: positional, flag, or json`
       );
     }
 
@@ -563,6 +605,15 @@ function validateMethodFields(method: MethodSpec): number {
       }
       registerFlag(seenFlags, method, field, "long", flag.long);
       registerFlag(seenFlags, method, field, "short", flag.short);
+    }
+
+    if (json) {
+      if (!supportsJsonPayload(field.descriptor)) {
+        throw new Error(
+          `${method.name}.${field.name} must be message, map, or list typed to be JSON-bound in cmdproto`
+        );
+      }
+      registerJsonPayload(seenFlags, method, field);
     }
   }
 
@@ -616,6 +667,21 @@ function registerFlag(
   seenFlags.set(key, field.name);
 }
 
+function registerJsonPayload(
+  seenFlags: Map<string, string>,
+  method: MethodSpec,
+  field: FieldSpec
+): void {
+  const key = "long:json";
+  const existing = seenFlags.get(key);
+  if (existing) {
+    throw new Error(
+      `${method.name} reuses JSON payload binding "--json" for ${field.name} and ${existing}`
+    );
+  }
+  seenFlags.set(key, field.name);
+}
+
 function validatePrefixShadowing(shorter: CommandBinding, longer: CommandBinding): void {
   if (shorter.positionalCount === 0) {
     return;
@@ -650,6 +716,10 @@ function supportsFlag(field: DescField): boolean {
   );
 }
 
+function supportsJsonPayload(field: DescField): boolean {
+  return field.fieldKind === "message" || field.fieldKind === "map" || field.fieldKind === "list";
+}
+
 function renderPlaceholder(fieldName: string): string {
   return fieldName.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase();
 }
@@ -670,73 +740,71 @@ function getFlagFields(method: MethodSpec): FieldSpec[] {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function getJsonPayloadField(method: MethodSpec): FieldSpec | undefined {
+  return method.fields.find((field) => field.param.json && !field.param.hidden);
+}
+
 export class CmdProtoRuntime {
   readonly schema: DescriptorRuntimeSchema;
   readonly manifest: RuntimeManifest;
   readonly commands: RuntimeCommandSpec[];
   readonly commandByMethod: Map<string, RuntimeCommandSpec>;
   readonly handlers: HandlerMap;
+  readonly renderHuman?: HumanRenderer;
 
   constructor(
     schema: DescriptorRuntimeSchema,
     manifest: RuntimeManifest,
     commands: RuntimeCommandSpec[],
-    handlers: HandlerMap
+    handlers: HandlerMap,
+    renderHuman?: HumanRenderer
   ) {
     this.schema = schema;
     this.manifest = manifest;
     this.commands = commands;
     this.commandByMethod = new Map(commands.map((command) => [command.manifest.method, command]));
     this.handlers = handlers;
+    this.renderHuman = renderHuman;
   }
 
-  async dispatch(input: unknown): Promise<CommandResponseJson> {
-    let request: CommandRequestJson;
-    try {
-      request = normalizeRequest(input);
-    } catch (error) {
-      return errorResponse(error);
-    }
+  async dispatch(input: unknown): Promise<CommandOutcome> {
+    const request = normalizeRequest(input);
 
     const descriptor = this.schema.methodByName.get(request.method);
     if (!descriptor) {
-      return errorResponse(
-        new CmdProtoError("METHOD_NOT_FOUND", `Unknown method: ${request.method}`),
-        request.requestId
-      );
+      throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown method: ${request.method}`);
     }
 
     const handler = this.handlers[request.method];
     if (!handler) {
-      return errorResponse(
-        new CmdProtoError("HANDLER_NOT_FOUND", `No handler registered for ${request.method}`),
-        request.requestId
-      );
+      throw new CmdProtoError("HANDLER_NOT_FOUND", `No handler registered for ${request.method}`);
     }
 
-    try {
-      const params = validateParams(this.schema, descriptor, request.params ?? {});
-      const context: HandlerContext = {
-        methodName: request.method,
-        descriptor,
-        request
-      };
-      const rawResult = await handler(params, context);
-      const result = validateResult(this.schema, descriptor, rawResult);
-      return withRequestId({ ok: true, result }, request.requestId);
-    } catch (error) {
-      return errorResponse(error, request.requestId);
-    }
+    const params = validateParams(this.schema, descriptor, request.params ?? {});
+    const context: HandlerContext = {
+      methodName: request.method,
+      descriptor,
+      request
+    };
+    const rawResult = await handler(params, context);
+    const rawOutcome = isCommandOutcome(rawResult)
+      ? rawResult
+      : commandOutcome(rawResult);
+    return commandOutcome(
+      validateResult(this.schema, descriptor, rawOutcome.result),
+      { statusCode: rawOutcome.statusCode }
+    );
   }
 }
 
 export function createRuntime(
   schema: DescriptorRuntimeSchema,
   manifest: RuntimeManifest,
-  handlers: HandlerMap
+  handlers: HandlerMap,
+  renderHuman?: HumanRenderer
 ): CmdProtoRuntime {
   const commands = buildRuntimeCommandSpecs(schema, manifest);
-  return new CmdProtoRuntime(schema, manifest, commands, handlers);
+  return new CmdProtoRuntime(schema, manifest, commands, handlers, renderHuman);
 }
 
 export function normalizeRequest(input: unknown): CommandRequestJson {
@@ -785,10 +853,53 @@ function validateResult(
   result: JsonValue
 ): JsonValue {
   try {
-    return canonicalizeJsonMessage(method.output, result ?? {}, schema.registry);
+    const validated = canonicalizeJsonMessage(
+      method.output,
+      wrapTransparentOutputResult(method.output, result),
+      schema.registry
+    );
+    return unwrapTransparentOutputResult(method.output, validated);
   } catch (error) {
     throw new CmdProtoError("INVALID_RESULT", formatError(error));
   }
+}
+
+function wrapTransparentOutputResult(
+  message: DescMessage,
+  result: JsonValue
+): JsonValue {
+  const field = getTransparentOutputField(message);
+  if (!field) {
+    return result ?? {};
+  }
+  if (isPlainObject(result) && "output" in result && Object.keys(result).length === 1) {
+    return result as JsonValue;
+  }
+  return { output: result ?? {} };
+}
+
+function unwrapTransparentOutputResult(
+  message: DescMessage,
+  result: JsonValue
+): JsonValue {
+  const field = getTransparentOutputField(message);
+  if (!field || !isPlainObject(result) || !("output" in result)) {
+    return result;
+  }
+  return (result as Record<string, JsonValue>).output ?? {};
+}
+
+function getTransparentOutputField(message: DescMessage): DescField | undefined {
+  if (message.fields.length !== 1) {
+    return undefined;
+  }
+  const [field] = message.fields;
+  if (!field || field.name !== "output") {
+    return undefined;
+  }
+  return field.fieldKind === "message" || field.fieldKind === "map" || field.fieldKind === "list"
+    ? field
+    : undefined;
 }
 
 function canonicalizeJsonMessage(
@@ -801,38 +912,6 @@ function canonicalizeJsonMessage(
     registry
   });
   return toJson(message, parsed, { registry }) as JsonValue;
-}
-
-function errorResponse(
-  error: unknown,
-  requestId?: string
-): CommandResponseJson {
-  const normalized =
-    error instanceof CmdProtoError
-      ? error
-      : new CmdProtoError("INTERNAL", formatError(error));
-
-  return withRequestId(
-    {
-      ok: false,
-      error: {
-        code: normalized.code,
-        message: normalized.message,
-        ...(normalized.details === undefined ? {} : { details: normalized.details })
-      }
-    },
-    requestId
-  );
-}
-
-function withRequestId<T extends CommandResponseJson>(
-  response: T,
-  requestId: string | undefined
-): T {
-  if (!requestId) {
-    return response;
-  }
-  return { ...response, requestId };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -850,7 +929,8 @@ export function getDefaultManifestPath(cwd = process.cwd()): string {
 export function createRuntimeFromFile(
   handlers: HandlerMap,
   schemaPath = getDefaultSchemaPath(),
-  manifestPath = getDefaultManifestPath()
+  manifestPath = getDefaultManifestPath(),
+  renderHuman?: HumanRenderer
 ): CmdProtoRuntime {
   const schemaBytes = readFileSync(schemaPath);
   const schema = loadDescriptorRuntimeSchemaFromBinary(schemaBytes);
@@ -861,19 +941,20 @@ export function createRuntimeFromFile(
       `runtime manifest descriptor hash mismatch: expected ${schemaHash}, got ${manifest.descriptorSetSha256 || "(missing)"}`
     );
   }
-  return createRuntime(schema, manifest, handlers);
+  return createRuntime(schema, manifest, handlers, renderHuman);
 }
 
 export async function executeApp({
   handlers,
   schemaPath = getDefaultSchemaPath(),
   manifestPath = getDefaultManifestPath(),
+  renderHuman,
   argv = process.argv.slice(2),
   stdin
 }: RunMainOptions): Promise<CliResult> {
   // The app runtime stays transport-neutral. Today `runCli()` is the one-shot
   // stdio adapter; future HTTP and streaming adapters should sit beside it.
-  const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath);
+  const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath, renderHuman);
   return runCli(runtime, argv, await resolveCliStdin(argv, stdin));
 }
 
@@ -903,20 +984,57 @@ export async function runCli(
     }
 
     const request = parseManifestHumanCommand(runtime, normalizedArgv, stdin);
-    const response = await runtime.dispatch(request);
-    return jsonEnvelopeResult(response, response.ok ? 0 : 1);
+    const outcome = await runtime.dispatch(request);
+    return renderHumanResult(runtime, outcome, request);
   } catch (error) {
-    return jsonEnvelopeResult(
-      {
-        ok: false,
-        error:
-          error instanceof CmdProtoError
-            ? { code: error.code, message: error.message }
-            : { code: "INTERNAL", message: formatError(error) }
-      },
-      1
-    );
+    return isCmdprotoControl(normalizedArgv)
+      ? jsonTextResult({ error: commandErrorJson(error) }, 1)
+      : humanErrorResult(error);
   }
+}
+
+function renderHumanResult(
+  runtime: CmdProtoRuntime,
+  outcome: CommandOutcome,
+  request: CommandRequestJson
+): CliResult {
+  const descriptor = runtime.schema.methodByName.get(request.method);
+  if (!descriptor) {
+    throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown method: ${request.method}`);
+  }
+  if (runtime.renderHuman) {
+    return runtime.renderHuman(outcome, {
+      methodName: request.method,
+      descriptor,
+      request
+    });
+  }
+  return jsonTextResult(outcome.result, outcome.statusCode);
+}
+
+function humanErrorResult(error: unknown): CliResult {
+  const normalized = commandErrorJson(error);
+  return {
+    statusCode: 1,
+    stdout: "",
+    stderr: `${normalized.message}\n`
+  };
+}
+
+function commandErrorJson(error: unknown): CommandErrorJson {
+  const normalized =
+    error instanceof CmdProtoError
+      ? error
+      : new CmdProtoError("INTERNAL", formatError(error));
+  return {
+    code: normalized.code,
+    message: normalized.message,
+    ...(normalized.details === undefined ? {} : { details: normalized.details })
+  };
+}
+
+function isCmdprotoControl(argv: string[]): boolean {
+  return argv[0] === "cmdproto";
 }
 
 function normalizeCliArgv(argv: string[]): string[] {
@@ -1034,11 +1152,6 @@ function parseManifestArguments(
   argv: string[],
   stdin = ""
 ): JsonObject {
-  const jsonRequest = readCommandJsonRequest(argv, stdin);
-  if (jsonRequest !== undefined) {
-    return jsonRequest;
-  }
-
   const params: JsonObject = {};
   const positionals = (command.manifest.parsePlan?.positionalJsonNames ?? []).map((jsonName) => {
     const param = command.paramByJsonName.get(jsonName);
@@ -1066,8 +1179,14 @@ function parseManifestArguments(
       if (!param) {
         throw new Error(`Runtime manifest is missing flag param ${binding.jsonName}`);
       }
-      const { value, consumedNext } = parseManifestFlagValue(param, binding, parsed.value, argv[index + 1]);
-      setManifestParam(params, param, value);
+      const { value, consumedNext, replace } = parseManifestFlagValue(
+        param,
+        binding,
+        parsed.value,
+        argv[index + 1],
+        stdin
+      );
+      setManifestParam(params, param, value, replace);
       if (consumedNext) {
         index += 1;
       }
@@ -1095,8 +1214,9 @@ function parseManifestFlagValue(
   param: RuntimeParam,
   binding: RuntimeFlagBinding,
   inlineValue: string | undefined,
-  nextValue: string | undefined
-): { value: JsonValue; consumedNext: boolean } {
+  nextValue: string | undefined,
+  stdin = ""
+): { value: JsonValue; consumedNext: boolean; replace?: boolean } {
   if (binding.valueMode === RuntimeFlagValueMode.BOOLEAN_OPTIONAL) {
     return {
       value: inlineValue === undefined ? true : parseBoolean(inlineValue),
@@ -1108,6 +1228,13 @@ function parseManifestFlagValue(
   if (value === undefined) {
     throw new CmdProtoError("INVALID_ARGUMENT", `Flag ${binding.token} requires a value`);
   }
+  if (binding.token === JSON_FLAG) {
+    return {
+      value: parseJsonRequestInput(value, stdin) as JsonValue,
+      consumedNext: inlineValue === undefined,
+      replace: true
+    };
+  }
   return {
     value: parseManifestCliValue(param, value),
     consumedNext: inlineValue === undefined
@@ -1117,8 +1244,13 @@ function parseManifestFlagValue(
 function setManifestParam(
   params: JsonObject,
   param: RuntimeParam,
-  value: JsonValue
+  value: JsonValue,
+  replace = false
 ): void {
+  if (replace) {
+    params[param.jsonName] = value;
+    return;
+  }
   if (param.jsonType?.kind === RuntimeJsonTypeKind.ARRAY) {
     const current = params[param.jsonName];
     params[param.jsonName] = Array.isArray(current) ? [...current, value] : [value];
@@ -1206,7 +1338,7 @@ export function renderHelp(schema: CmdProtoSchema): string {
     "  --help --json prints compact payload-schema JSON.",
     "",
     "Machine control:",
-    `  ${EXECUTE_USAGE.padEnd(36)} ${EXECUTE_SUMMARY}`.trimEnd()
+    `  ${EXECJSON_USAGE.padEnd(36)} ${EXECJSON_SUMMARY}`.trimEnd()
   );
   return `${lines.join("\n")}\n`;
 }
@@ -1222,29 +1354,27 @@ async function runCmdprotoCommand(
     return undefined;
   }
 
-  if (argv[1] === "execute") {
+  if (argv[1] === "execjson") {
     const executeArgv = argv.slice(2);
-
-    const jsonIndex = executeArgv.indexOf(JSON_FLAG);
-    if (jsonIndex < 1 || jsonIndex !== executeArgv.length - 2) {
-      throw new CmdProtoError("INVALID_ARGUMENT", `Usage: ${EXECUTE_USAGE}`);
+    if (executeArgv.length < 2) {
+      throw new CmdProtoError("INVALID_ARGUMENT", `Usage: ${EXECJSON_USAGE}`);
     }
 
-    const pathTokens = executeArgv.slice(0, jsonIndex);
+    const pathTokens = executeArgv.slice(0, -1);
     const match = findExactRuntimeCommand(runtime.commands, pathTokens);
     if (!match) {
       throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command: ${pathTokens.join(" ")}`);
     }
 
     const params = parseJsonRequestInput(
-      executeArgv[jsonIndex + 1],
+      executeArgv[executeArgv.length - 1],
       stdin
     ) as JsonValue;
-    const response = await runtime.dispatch({
+    const outcome = await runtime.dispatch({
       method: match.command.manifest.method,
       params
     });
-    return jsonEnvelopeResult(response, response.ok ? 0 : 1);
+    return jsonTextResult(outcome.result, outcome.statusCode);
   }
 
   throw new CmdProtoError(
@@ -1276,7 +1406,7 @@ function runRuntimeHelpCommand(runtime: CmdProtoRuntime, argv: string[]): CliRes
     if (filtered.length === 1) {
       return renderRuntimeHelpSurface(runtime.manifest.controlHelp, json);
     }
-    if (filtered.length === 2 && filtered[1] === "execute") {
+    if (filtered.length === 2 && filtered[1] === "execjson") {
       return renderRuntimeHelpSurface(runtime.manifest.execute?.help, json);
     }
     throw new CmdProtoError(
@@ -1339,8 +1469,8 @@ function renderCmdprotoHelp(argv: string[], json: boolean): CliResult {
     return json ? renderJsonHelp(buildMinimalCmdprotoIndexJson()) : textResult(renderCmdprotoIndexHelp());
   }
 
-  if (argv.length === 1 && argv[0] === "execute") {
-    return json ? renderJsonHelp(buildMinimalExecuteHelpJson()) : textResult(renderExecuteHelp());
+  if (argv.length === 1 && argv[0] === "execjson") {
+    return json ? renderJsonHelp(buildMinimalExecJsonHelpJson()) : textResult(renderExecJsonHelp());
   }
 
   throw new CmdProtoError(
@@ -1357,7 +1487,7 @@ function buildMinimalGlobalHelpJson(schema: CmdProtoSchema): JsonObject {
         path: getPreferredMachineCommandPath(method),
         ...(method.command.summary ? { summary: method.command.summary } : {})
       })),
-    execute: buildMinimalExecuteHelpJson()
+    execjson: buildMinimalExecJsonHelpJson()
   };
 }
 
@@ -1368,7 +1498,7 @@ function buildMinimalMethodHelpJson(method: MethodSpec): JsonObject {
     ...(method.command.alias.length > 0 ? { aliases: method.command.alias } : {}),
     input_type: method.input.typeName,
     output_type: method.output.typeName,
-    machine_usage: renderExecuteTemplate(method),
+    machine_usage: renderExecJsonTemplate(method),
     payload_json_schema: buildMessageJsonSchema(method.input),
     payload_schema: buildMinimalFieldsJson(method),
     examples: method.command.example.map((example) => buildMinimalExampleHelpJson(method, example))
@@ -1378,7 +1508,7 @@ function buildMinimalMethodHelpJson(method: MethodSpec): JsonObject {
 function buildMinimalExampleHelpJson(method: MethodSpec, example: CliExample): JsonObject {
   return {
     ...(example.description ? { description: example.description } : {}),
-    cmd: renderExecuteExampleCommand(method, example.requestJson)
+    cmd: renderExecJsonExampleCommand(method, example.requestJson)
   };
 }
 
@@ -1445,37 +1575,37 @@ function renderJsonScalarType(scalar: ScalarType): string {
 
 function buildMinimalCmdprotoIndexJson(): JsonObject {
   return {
-    execute: buildMinimalExecuteHelpJson()
+    execjson: buildMinimalExecJsonHelpJson()
   };
 }
 
-function buildExecuteHelpSummaryJson(): JsonObject {
+function buildExecJsonHelpSummaryJson(): JsonObject {
   return {
-    name: "cmdproto execute",
-    usage: EXECUTE_USAGE,
-    summary: EXECUTE_SUMMARY
+    name: "cmdproto execjson",
+    usage: EXECJSON_USAGE,
+    summary: EXECJSON_SUMMARY
   };
 }
 
-function buildMinimalExecuteHelpJson(): JsonObject {
-  return buildExecuteHelpSummaryJson();
+function buildMinimalExecJsonHelpJson(): JsonObject {
+  return buildExecJsonHelpSummaryJson();
 }
 
 function renderCmdprotoIndexHelp(): string {
   const lines = [
     "Machine control:",
     "",
-    `  ${EXECUTE_USAGE.padEnd(36)} ${EXECUTE_SUMMARY}`.trimEnd()
+    `  ${EXECJSON_USAGE.padEnd(36)} ${EXECJSON_SUMMARY}`.trimEnd()
   ];
   return `${lines.join("\n")}\n`;
 }
 
-function renderExecuteHelp(): string {
+function renderExecJsonHelp(): string {
   const lines = [
-    EXECUTE_SUMMARY,
+    EXECJSON_SUMMARY,
     "",
     "Usage:",
-    `  ${EXECUTE_USAGE}`,
+    `  ${EXECJSON_USAGE}`,
     "",
     "Notes:",
     "  <path> resolves a declared command path or alias.",
@@ -1494,8 +1624,8 @@ function renderMethodHelp(method: MethodSpec): string {
     "Machine method:",
     `  ${method.name}`,
     "",
-    "Machine execute:",
-    `  ${renderExecuteTemplate(method)}`,
+    "Machine execjson:",
+    `  ${renderExecJsonTemplate(method)}`,
     "",
     "Payload type:",
     `  ${method.input.typeName}`,
@@ -1527,7 +1657,7 @@ function renderMethodHelp(method: MethodSpec): string {
         method.command.example.map((example) => [
           example.description,
           example.command,
-          renderExecuteExampleCommand(method, example.requestJson)
+          renderExecJsonExampleCommand(method, example.requestJson)
         ])
       )
     );
@@ -1548,15 +1678,19 @@ function getHelpFields(method: MethodSpec): FieldSpec[] {
     .filter((field) => field.param.flag && !field.param.positional && !field.param.hidden)
     .sort((left, right) => renderCliFieldLabel(left).localeCompare(renderCliFieldLabel(right)));
   const payloadOnly = method.fields
-    .filter((field) => !field.param.positional && !field.param.flag && !field.param.hidden)
+    .filter((field) => !field.param.positional && !field.param.flag && !field.param.json && !field.param.hidden)
     .sort((left, right) => left.jsonName.localeCompare(right.jsonName));
+  const jsonPayload = method.fields.filter((field) => field.param.json && !field.param.hidden);
 
-  return [...positionals, ...flags, ...payloadOnly];
+  return [...positionals, ...flags, ...jsonPayload, ...payloadOnly];
 }
 
 function renderCliFieldLabel(field: FieldSpec): string {
   if (field.param.positional) {
     return `<${field.name.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}>`;
+  }
+  if (field.param.json) {
+    return "--json";
   }
   const flag = field.param.flag;
   if (!flag) {
@@ -1607,13 +1741,13 @@ function parseJsonRequest(raw: string): unknown {
   }
 }
 
-function renderExecuteTemplate(method: MethodSpec): string {
-  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json <json|@file|@->`;
+function renderExecJsonTemplate(method: MethodSpec): string {
+  return `cmdproto execjson ${getPreferredMachineCommandPath(method)} <json|@file|@->`;
 }
 
-function renderExecuteExampleCommand(method: MethodSpec, requestJson: string): string {
+function renderExecJsonExampleCommand(method: MethodSpec, requestJson: string): string {
   const payload = normalizeExamplePayload(requestJson);
-  return `cmdproto execute ${getPreferredMachineCommandPath(method)} --json ${quoteShellArgument(
+  return `cmdproto execjson ${getPreferredMachineCommandPath(method)} ${quoteShellArgument(
     JSON.stringify(payload)
   )}`;
 }
@@ -1739,12 +1873,11 @@ async function resolveCliStdin(
 }
 
 function commandReadsStdin(argv: string[]): boolean {
-  if (argv[0] === "cmdproto" && argv[1] === "execute") {
-    const jsonIndex = argv.indexOf(JSON_FLAG);
-    return jsonIndex >= 0 && argv[jsonIndex + 1] === "@-";
+  if (argv[0] === "cmdproto" && argv[1] === "execjson") {
+    return argv[argv.length - 1] === "@-";
   }
-  const spec = directCommandJsonSpec(argv.slice(-2));
-  return !argv.includes(HELP_FLAG) && spec === "@-";
+  const jsonIndex = argv.indexOf(JSON_FLAG);
+  return !argv.includes(HELP_FLAG) && jsonIndex >= 0 && argv[jsonIndex + 1] === "@-";
 }
 
 async function readProcessStdin(): Promise<string> {
@@ -1837,11 +1970,6 @@ function parseArguments(
   argv: string[],
   stdin = ""
 ): JsonObject {
-  const jsonRequest = readCommandJsonRequest(argv, stdin);
-  if (jsonRequest !== undefined) {
-    return jsonRequest;
-  }
-
   const params: JsonObject = {};
   const positionals = method.fields
     .filter((field) => field.param.positional && !field.param.hidden)
@@ -1867,8 +1995,13 @@ function parseArguments(
         throw new CmdProtoError("INVALID_ARGUMENT", `Unknown flag: ${parsed.name}`);
       }
 
-      const { value, consumedNext } = parseFlagValue(field, parsed.value, argv[index + 1]);
-      setParam(params, field, value);
+      const { value, consumedNext, replace } = parseFlagValue(
+        field,
+        parsed.value,
+        argv[index + 1],
+        stdin
+      );
+      setParam(params, field, value, replace);
       if (consumedNext) {
         index += 1;
       }
@@ -1895,7 +2028,14 @@ function parseArguments(
 function buildFlagIndex(fields: FieldSpec[]): Map<string, FieldSpec> {
   const flags = new Map<string, FieldSpec>();
   for (const field of fields) {
-    if (field.param.hidden || !field.param.flag) {
+    if (field.param.hidden) {
+      continue;
+    }
+    if (field.param.json) {
+      flags.set(JSON_FLAG, field);
+      continue;
+    }
+    if (!field.param.flag) {
       continue;
     }
     if (field.param.flag.long) {
@@ -1929,8 +2069,20 @@ function parseFlagToken(token: string): { name: string; value?: string } {
 function parseFlagValue(
   field: FieldSpec,
   inlineValue: string | undefined,
-  nextValue: string | undefined
-): { value: JsonValue; consumedNext: boolean } {
+  nextValue: string | undefined,
+  stdin = ""
+): { value: JsonValue; consumedNext: boolean; replace?: boolean } {
+  if (field.param.json) {
+    const value = inlineValue ?? nextValue;
+    if (value === undefined) {
+      throw new CmdProtoError("INVALID_ARGUMENT", "Flag --json requires a value");
+    }
+    return {
+      value: parseJsonRequestInput(value, stdin) as JsonValue,
+      consumedNext: inlineValue === undefined,
+      replace: true
+    };
+  }
   if (isBooleanField(field.descriptor)) {
     return {
       value: inlineValue === undefined ? true : parseBoolean(inlineValue),
@@ -1951,7 +2103,16 @@ function parseFlagValue(
   };
 }
 
-function setParam(params: JsonObject, field: FieldSpec, value: JsonValue): void {
+function setParam(
+  params: JsonObject,
+  field: FieldSpec,
+  value: JsonValue,
+  replace = false
+): void {
+  if (replace) {
+    params[field.jsonName] = value;
+    return;
+  }
   if (field.descriptor.fieldKind === "list") {
     const current = params[field.jsonName];
     params[field.jsonName] = Array.isArray(current) ? [...current, value] : [value];
@@ -1977,31 +2138,6 @@ function parseCliValue(field: DescField, raw: string): JsonValue {
   }
 
   throw new CmdProtoError("INVALID_ARGUMENT", `Field ${field.name} is not CLI-scalar`);
-}
-
-function directCommandJsonSpec(argv: string[]): string | undefined {
-  if (argv.length !== 2 || argv[0] !== JSON_FLAG) {
-    return undefined;
-  }
-  return argv[1];
-}
-
-function readCommandJsonRequest(
-  argv: string[],
-  stdin: string
-): JsonObject | undefined {
-  const spec = directCommandJsonSpec(argv);
-  if (spec === undefined) {
-    return undefined;
-  }
-  const payload = parseJsonRequestInput(spec, stdin);
-  if (!isPlainObject(payload)) {
-    throw new CmdProtoError(
-      "INVALID_REQUEST",
-      "Direct command --json payload must be a JSON object"
-    );
-  }
-  return payload as JsonObject;
 }
 
 function parseScalarValue(
@@ -2074,14 +2210,6 @@ function parseNumber(raw: string, fieldName: string): number {
 }
 
 function jsonTextResult(value: unknown, statusCode: number): CliResult {
-  return {
-    statusCode,
-    stdout: `${JSON.stringify(value)}\n`,
-    stderr: ""
-  };
-}
-
-function jsonEnvelopeResult(value: unknown, statusCode: number): CliResult {
   return {
     statusCode,
     stdout: `${JSON.stringify(value)}\n`,

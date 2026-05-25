@@ -34,12 +34,12 @@ manifest-driven CLI and JSON execution surface backed by protobuf descriptors.
 - Human CLI: `app greet Ada -s`
 - Command help: `app greet --help`
 - Structured help: `app greet --help --json`
-- Machine CLI: `app cmdproto execute greet --json '{"name":"Ada","shout":true}'`
+- Machine CLI: `app cmdproto execjson greet '{"name":"Ada","shout":true}'`
 
 Default structured help is intentionally lean and uses the manifest app name:
 
 ```json
-{"payload_schema":{"name":{"type":"string","help":"Name to greet."},"shout":{"type":"boolean","help":"Uppercase the greeting."}},"examples":[{"cmd":"greeter cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'","description":"Render a loud greeting."}]}
+{"payload_schema":{"name":{"type":"string","help":"Name to greet."},"shout":{"type":"boolean","help":"Uppercase the greeting."}},"examples":[{"cmd":"greeter cmdproto execjson greet '{\"name\":\"Ada\",\"shout\":true}'","description":"Render a loud greeting."}]}
 ```
 
 `--help` carries the richer human-facing details: the fully-qualified RPC name,
@@ -188,7 +188,7 @@ npm run schema:build:greeter
    routing, help output, and human CLI parsing; the descriptor set is only used
    for protobuf JSON validation and type reflection.
 6. Register handlers and use the app through human commands, `--help`, or
-   `cmdproto execute <path> --json`.
+   `cmdproto execjson <path> <json|@file|@->`.
 
 `schema.binpb` and `runtime.binpb` are the compiled runtime artifacts that
 `cmdproto` consumes. We do not read raw `.proto` text in the app process.
@@ -216,7 +216,7 @@ npm run schema:build:greeter
 npm run example:greeter -- greet Ada -s
 npm run example:greeter -- greet --help
 npm run example:greeter -- greet --help --json
-npm run example:greeter -- cmdproto execute greet --json '{"name":"Ada","shout":true}'
+npm run example:greeter -- cmdproto execjson greet '{"name":"Ada","shout":true}'
 npm --prefix examples/greeter install
 npm --prefix examples/greeter run check
 ```

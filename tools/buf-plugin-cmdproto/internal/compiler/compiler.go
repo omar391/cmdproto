@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -31,9 +30,9 @@ const (
 	manifestVersion = 1
 	helpJSONVersion = 2
 
-	executeName    = "cmdproto execute"
-	executeUsage   = "cmdproto execute <path> --json <json|@file|@->"
-	executeSummary = "Execute a machine payload for a command path."
+	executeName    = "cmdproto execjson"
+	executeUsage   = "cmdproto execjson <path> <json|@file|@->"
+	executeSummary = "Execute a machine JSON payload for a command path."
 )
 
 var (
@@ -83,6 +82,7 @@ type cliExample struct {
 type paramOptions struct {
 	positional    *positionalOptions
 	flag          *flagOptions
+	jsonPayload   bool
 	help          string
 	hidden        bool
 	positionLabel string
@@ -465,6 +465,7 @@ func readParamOptions(
 ) paramOptions {
 	positionalMessage, hasPositionalMessage := getMessageField(message, "positional")
 	flagMessage, hasFlagMessage := getMessageField(message, "flag")
+	_, hasJSONPayload := getMessageField(message, "json")
 
 	options := paramOptions{
 		help:   getStringField(message, "help"),
@@ -485,6 +486,9 @@ func readParamOptions(
 				short: shortFlag,
 			}
 		}
+	}
+	if hasJSONPayload {
+		options.jsonPayload = true
 	}
 	return options
 }
@@ -563,11 +567,22 @@ func validateMethodFields(method *methodSpec) (int, []Issue) {
 	for _, field := range method.fields {
 		positional := field.param.positional
 		flag := field.param.flag
+		jsonPayload := field.param.jsonPayload
 
-		if positional != nil && flag != nil {
+		bindingCount := 0
+		if positional != nil {
+			bindingCount += 1
+		}
+		if flag != nil {
+			bindingCount += 1
+		}
+		if jsonPayload {
+			bindingCount += 1
+		}
+		if bindingCount > 1 {
 			issues = append(issues, Issue{
 				Descriptor: field.descriptor,
-				Message:    method.name + "." + field.name + " cannot be both positional and flag-bound in cmdproto",
+				Message:    method.name + "." + field.name + " can only use one cmdproto binding: positional, flag, or json",
 			})
 		}
 
@@ -596,6 +611,17 @@ func validateMethodFields(method *methodSpec) (int, []Issue) {
 			} else {
 				registerFlag(seenFlags, method, field, "long", flag.long, &issues)
 				registerFlag(seenFlags, method, field, "short", flag.short, &issues)
+			}
+		}
+
+		if jsonPayload {
+			if !supportsJSONPayload(field.descriptor) {
+				issues = append(issues, Issue{
+					Descriptor: field.descriptor,
+					Message:    method.name + "." + field.name + " must be message, map, or list typed to be JSON-bound in cmdproto",
+				})
+			} else {
+				registerJSONPayload(seenFlags, method, field, &issues)
 			}
 		}
 	}
@@ -635,6 +661,12 @@ func validateMethodExamples(method *methodSpec, ctx *schemaContext) []Issue {
 				Message:    method.name + " has a cmdproto example with an empty command",
 			})
 			continue
+		}
+		if tokens := splitCommandPath(commandText); len(tokens) > 0 && tokens[0] == "cmdproto" {
+			issues = append(issues, Issue{
+				Descriptor: method.descriptor,
+				Message:    method.name + " example \"" + commandText + "\" must be human command syntax, not cmdproto control syntax",
+			})
 		}
 
 		if !exampleMatchesCommandBinding(commandText, method.command) {
@@ -691,36 +723,11 @@ func validateExampleCommand(
 	if match == nil {
 		return "", fmt.Errorf("must start with the command path or an alias")
 	}
-	if requestJSON, ok, err := parseExampleCommandJSON(tokens[len(match.tokens):]); err != nil {
-		return "", err
-	} else if ok {
-		return validateExampleRequestJSON(method, requestJSON, ctx)
-	}
 	params, err := parseArguments(method, tokens[len(match.tokens):])
 	if err != nil {
 		return "", err
 	}
 	return canonicalizeJSONMessage(method.input, params, ctx)
-}
-
-func parseExampleCommandJSON(argv []string) (string, bool, error) {
-	if len(argv) == 0 {
-		return "", false, nil
-	}
-	if len(argv) != 2 || argv[0] != "--json" {
-		return "", false, nil
-	}
-	if argv[1] == "@-" {
-		return "", false, fmt.Errorf("command examples cannot use --json @-")
-	}
-	if strings.HasPrefix(argv[1], "@") {
-		body, err := os.ReadFile(argv[1][1:])
-		if err != nil {
-			return "", false, err
-		}
-		return string(body), true, nil
-	}
-	return argv[1], true, nil
 }
 
 func validateExampleRequestJSON(
@@ -913,6 +920,23 @@ func registerFlag(
 	seenFlags[key] = field.name
 }
 
+func registerJSONPayload(
+	seenFlags map[string]string,
+	method *methodSpec,
+	field *fieldSpec,
+	issues *[]Issue,
+) {
+	key := "long:json"
+	if existingField, ok := seenFlags[key]; ok {
+		*issues = append(*issues, Issue{
+			Descriptor: field.descriptor,
+			Message:    method.name + " reuses JSON payload binding \"--json\" for " + field.name + " and " + existingField,
+		})
+		return
+	}
+	seenFlags[key] = field.name
+}
+
 func validatePrefixShadowing(
 	shorter commandBinding,
 	longer commandBinding,
@@ -963,6 +987,10 @@ func supportsFlag(field protoreflect.FieldDescriptor) bool {
 		return isScalarOrEnum(field)
 	}
 	return isScalarOrEnum(field)
+}
+
+func supportsJSONPayload(field protoreflect.FieldDescriptor) bool {
+	return field.IsMap() || field.IsList() || field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind
 }
 
 func isScalarOrEnum(field protoreflect.FieldDescriptor) bool {
@@ -1031,11 +1059,11 @@ func parseArguments(method *methodSpec, argv []string) (map[string]any, error) {
 			if field == nil {
 				return nil, fmt.Errorf("unknown flag: %s", parsed.name)
 			}
-			value, consumedNext, err := parseFlagValue(field, parsed.value, nextToken(argv, index+1))
+			value, consumedNext, replace, err := parseFlagValue(field, parsed.value, nextToken(argv, index+1))
 			if err != nil {
 				return nil, err
 			}
-			setParam(params, field, value)
+			setParam(params, field, value, replace)
 			if consumedNext {
 				index += 1
 			}
@@ -1096,10 +1124,26 @@ func getFlagFields(method *methodSpec) []*fieldSpec {
 	return fields
 }
 
+func getJSONPayloadField(method *methodSpec) *fieldSpec {
+	for _, field := range method.fields {
+		if field.param.jsonPayload && !field.param.hidden {
+			return field
+		}
+	}
+	return nil
+}
+
 func buildFlagIndex(fields []*fieldSpec) map[string]*fieldSpec {
 	index := make(map[string]*fieldSpec)
 	for _, field := range fields {
-		if field.param.hidden || field.param.flag == nil {
+		if field.param.hidden {
+			continue
+		}
+		if field.param.jsonPayload {
+			index["--json"] = field
+			continue
+		}
+		if field.param.flag == nil {
 			continue
 		}
 		if field.param.flag.long != "" {
@@ -1137,13 +1181,26 @@ func parseFlagValue(
 	field *fieldSpec,
 	inlineValue *string,
 	nextValue string,
-) (any, bool, error) {
+) (any, bool, bool, error) {
+	if field.param.jsonPayload {
+		value := nextValue
+		consumedNext := true
+		if inlineValue != nil {
+			value = *inlineValue
+			consumedNext = false
+		}
+		if value == "" {
+			return nil, false, false, fmt.Errorf("flag --json requires a value")
+		}
+		parsed, err := parseJSONPayloadValue(value)
+		return parsed, consumedNext, true, err
+	}
 	if isBooleanField(field.descriptor) {
 		if inlineValue == nil {
-			return true, false, nil
+			return true, false, false, nil
 		}
 		value, err := parseBoolean(*inlineValue)
-		return value, false, err
+		return value, false, false, err
 	}
 
 	value := nextValue
@@ -1153,13 +1210,28 @@ func parseFlagValue(
 		consumedNext = false
 	}
 	if value == "" {
-		return nil, false, fmt.Errorf("flag %s requires a value", renderPreferredFlag(field))
+		return nil, false, false, fmt.Errorf("flag %s requires a value", renderPreferredFlag(field))
 	}
 	parsed, err := parseCLIValue(field.descriptor, value)
-	return parsed, consumedNext, err
+	return parsed, consumedNext, false, err
 }
 
-func setParam(params map[string]any, field *fieldSpec, value any) {
+func parseJSONPayloadValue(raw string) (any, error) {
+	if strings.HasPrefix(raw, "@") {
+		return nil, fmt.Errorf("command examples must inline JSON payloads")
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func setParam(params map[string]any, field *fieldSpec, value any, replace ...bool) {
+	if len(replace) > 0 && replace[0] {
+		params[field.jsonName] = value
+		return
+	}
 	if field.descriptor.IsList() {
 		current, _ := params[field.jsonName].([]any)
 		params[field.jsonName] = append(current, value)
@@ -1298,7 +1370,7 @@ func buildManifest(
 	controlHelp := &cmdprotov1.RuntimeHelpSurface{}
 	controlHelp.SetText(renderControlHelp())
 	controlHelp.SetJson(mustJSONString(map[string]any{
-		"execute": buildExecuteHelpSummaryJSON(),
+		"execjson": buildExecuteHelpSummaryJSON(),
 	}))
 	manifest.SetControlHelp(controlHelp)
 	rootHelp := &cmdprotov1.RuntimeHelpSurface{}
@@ -1462,6 +1534,14 @@ func buildParsePlan(method *methodSpec) *cmdprotov1.RuntimeParsePlan {
 			flags = append(flags, flag)
 		}
 	}
+	if field := getJSONPayloadField(method); field != nil {
+		flag := &cmdprotov1.RuntimeFlagBinding{}
+		flag.SetToken("--json")
+		flag.SetJsonName(field.jsonName)
+		flag.SetValueMode(cmdprotov1.RuntimeFlagValueMode_RUNTIME_FLAG_VALUE_MODE_REQUIRED)
+		flag.SetRepeated(false)
+		flags = append(flags, flag)
+	}
 	slices.SortFunc(flags, func(left, right *cmdprotov1.RuntimeFlagBinding) int {
 		return strings.Compare(left.GetToken(), right.GetToken())
 	})
@@ -1577,6 +1657,9 @@ func renderMethodUsage(method *methodSpec) string {
 		}
 		parts = append(parts, "["+strings.Join(names, ", ")+"]")
 	}
+	if getJSONPayloadField(method) != nil {
+		parts = append(parts, "[--json <json|@file|@->]")
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -1587,7 +1670,7 @@ func renderPlaceholder(fieldName string) string {
 var nonAlphaNum = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 func renderExecuteTemplate(method *methodSpec) string {
-	return "cmdproto execute " + preferredMachinePath(method) + " --json <json|@file|@->"
+	return "cmdproto execjson " + preferredMachinePath(method) + " <json|@file|@->"
 }
 
 func renderAppHumanCommand(appName, command string) string {
@@ -1599,7 +1682,7 @@ func renderAppHumanCommand(appName, command string) string {
 }
 
 func renderAppExecuteExampleCommand(appName, path string, payloadJSON string) string {
-	command := "cmdproto execute " + path + " --json " + quoteShellArgument(payloadJSON)
+	command := "cmdproto execjson " + path + " " + quoteShellArgument(payloadJSON)
 	if appName == "" {
 		return command
 	}
@@ -1613,6 +1696,9 @@ func quoteShellArgument(value string) string {
 func renderCLIFieldLabel(field *fieldSpec) string {
 	if field.param.positional != nil {
 		return "<" + renderPlaceholder(field.name) + ">"
+	}
+	if field.param.jsonPayload {
+		return "--json"
 	}
 	if field.param.flag == nil {
 		return "-"
@@ -1698,7 +1784,7 @@ func renderMethodHelp(method *methodSpec, command *cmdprotov1.RuntimeCommand) st
 		"Machine method:",
 		"  " + command.GetMethod(),
 		"",
-		"Machine execute:",
+		"Machine execjson:",
 		"  " + command.GetMachineUsage(),
 		"",
 		"Payload type:",
@@ -1816,7 +1902,7 @@ func buildRootHelpJSON(methods []*methodSpec) map[string]any {
 	}
 	return map[string]any{
 		"commands": commands,
-		"execute":  buildExecuteHelpSummaryJSON(),
+		"execjson": buildExecuteHelpSummaryJSON(),
 	}
 }
 

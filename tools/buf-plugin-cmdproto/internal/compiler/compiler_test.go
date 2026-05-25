@@ -110,7 +110,7 @@ message GreetResponse {
 	if got, want := commandManifest.GetExamples()[0].GetHumanCommand(), "greeter greet Ada -s"; got != want {
 		t.Fatalf("human command = %q, want %q", got, want)
 	}
-	if got, want := commandManifest.GetExamples()[0].GetMachineCommand(), "greeter cmdproto execute greet --json '{\"name\":\"Ada\",\"shout\":true}'"; got != want {
+	if got, want := commandManifest.GetExamples()[0].GetMachineCommand(), "greeter cmdproto execjson greet '{\"name\":\"Ada\",\"shout\":true}'"; got != want {
 		t.Fatalf("machine command = %q, want %q", got, want)
 	}
 
@@ -134,7 +134,7 @@ message GreetResponse {
 	if err := json.Unmarshal([]byte(commandManifest.GetHelp().GetJson()), &commandHelp); err != nil {
 		t.Fatalf("parse command help json: %v", err)
 	}
-	if got, want := commandHelp["machine_usage"], "cmdproto execute greet --json <json|@file|@->"; got != want {
+	if got, want := commandHelp["machine_usage"], "cmdproto execjson greet <json|@file|@->"; got != want {
 		t.Fatalf("machine_usage = %v, want %q", got, want)
 	}
 	if _, ok := commandHelp["payload_json_schema"].(map[string]any); !ok {
@@ -142,7 +142,7 @@ message GreetResponse {
 	}
 }
 
-func TestCompileDescriptorSetBytesAcceptsDirectJSONExampleCommands(t *testing.T) {
+func TestCompileDescriptorSetBytesRejectsCmdprotoExampleCommands(t *testing.T) {
 	workspace := writeWorkspace(t, `
 edition = "2024";
 
@@ -156,7 +156,7 @@ service AppService {
       path: "greet"
       summary: "Render a greeting."
       example: {
-        command: "greet --json {\"name\":\"Ada\",\"shout\":true}"
+        command: "cmdproto execjson greet '{\"name\":\"Ada\",\"shout\":true}'"
         description: "Render a loud greeting."
         request_json: "{\"name\":\"Ada\",\"shout\":true}"
       }
@@ -203,9 +203,15 @@ message GreetResponse {
 	if err != nil {
 		t.Fatalf("compile manifest: %v", err)
 	}
-	if len(issues) > 0 {
-		t.Fatalf("expected no issues, got %v", issues)
+	if len(issues) == 0 {
+		t.Fatal("expected at least one issue")
 	}
+	for _, issue := range issues {
+		if strings.Contains(issue.Message, "must be human command syntax, not cmdproto control syntax") {
+			return
+		}
+	}
+	t.Fatalf("missing control-syntax issue in %v", issues)
 }
 
 func writeWorkspace(t *testing.T, appProto string) string {

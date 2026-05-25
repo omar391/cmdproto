@@ -39,6 +39,7 @@ message Param {
   Flag flag = 2;
   string help = 3;
   bool hidden = 4;
+  JsonPayload json = 5;
 }
 
 message Positional {
@@ -48,6 +49,10 @@ message Positional {
 message Flag {
   string long = 1;
   string short = 2;
+}
+
+message JsonPayload {
+  bool enabled = 1;
 }
 
 message JsonSchema {
