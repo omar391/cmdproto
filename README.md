@@ -99,8 +99,9 @@ That also creates:
   - `cmdproto:run`
 
 `cmdproto-runtime-manifest` and `cmdproto-buf-plugin` are shipped for consumers
-as package-contained WASM-backed commands, so consumer machines do not need Go
-installed for schema build and lint.
+as package-contained WASM-backed commands, and `cmdproto-build` wraps the common
+Buf generate/lint/build plus runtime-manifest flow. Consumer machines do not
+need Go installed for schema build and lint.
 
 ## Authoring A New App
 
@@ -173,7 +174,7 @@ await runMain({ handlers });
 2. Lint and build a descriptor set, for example:
 
 ```sh
-npm run schema:build:greeter
+npm run cmdproto:schema
 ```
 
 3. `buf lint` runs both Buf's built-in lint rules and the local `cmdproto`

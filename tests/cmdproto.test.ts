@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ScalarType, type DescField } from "@bufbuild/protobuf";
@@ -37,6 +40,25 @@ function parseStdout(stdout: string) {
 }
 
 describe("cmdproto descriptors", () => {
+  it("bootstraps consumer scripts through the package build helper", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "cmdproto-bootstrap-"));
+
+    execFileSync(process.execPath, [
+      "scripts/bootstrap.mjs",
+      "init",
+      "--cwd",
+      cwd,
+      "--app-name",
+      "demo"
+    ]);
+
+    const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+
+    assert.equal(pkg.scripts["cmdproto:gen"], "cmdproto-build --generate-only --buf-config buf.yaml");
+    assert.equal(pkg.scripts["cmdproto:schema"], "cmdproto-build --app-name demo --buf-config buf.yaml");
+    assert.doesNotMatch(pkg.scripts["cmdproto:schema"], /buf lint|mkdir -p|runtime-manifest/);
+  });
+
   it("discovers command paths and param bindings from the descriptor set", () => {
     const schema = loadSchemaFromFile(SCHEMA_PATH);
     const method = schema.methodByName.get(GREETER_METHOD);

@@ -5,6 +5,7 @@
   "type": "module",
   "bin": {
     "cmdproto-setup": "./scripts/bootstrap.mjs",
+    "cmdproto-build": "./scripts/build.mjs",
     "cmdproto-buf-plugin": "./scripts/buf-plugin-cmdproto",
     "cmdproto-runtime-manifest": "./scripts/runtime-manifest.mjs"
   },
@@ -23,14 +24,15 @@
     "dist/wasm",
     "proto",
     "scripts/bootstrap.mjs",
+    "scripts/build.mjs",
     "scripts/buf-plugin-cmdproto",
     "scripts/run-wasi.mjs",
     "scripts/runtime-manifest.mjs"
   ],
   "scripts": {
     "build:wasm": "mkdir -p dist/wasm && cd tools/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-buf-plugin.wasm ./cmd/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-runtime-manifest.wasm ./cmd/runtime-manifest",
-    "schema:build": "buf lint --config buf.yaml && mkdir -p dist && buf build --config buf.yaml proto --as-file-descriptor-set -o dist/schema.binpb && node ./scripts/runtime-manifest.mjs --app-name app --schema dist/schema.binpb --out dist/runtime.binpb",
-    "schema:build:greeter": "buf lint --config buf.yaml examples/greeter/proto && mkdir -p examples/greeter/dist && buf build --config buf.yaml examples/greeter/proto --as-file-descriptor-set -o examples/greeter/dist/schema.binpb && node ./scripts/runtime-manifest.mjs --app-name greeter --schema examples/greeter/dist/schema.binpb --out examples/greeter/dist/runtime.binpb",
+    "schema:build": "node ./scripts/build.mjs --app-name app",
+    "schema:build:greeter": "node ./scripts/build.mjs --app-name greeter --proto examples/greeter/proto --out-dir examples/greeter/dist",
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
     "test": "node --import tsx --test tests/**/*.test.ts",

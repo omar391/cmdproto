@@ -159,15 +159,9 @@ function writePackageJson(config) {
   pkg.devDependencies ??= {};
 
   pkg.scripts["cmdproto:schema"] =
-    "buf lint --config " +
-    config.bufConfigName +
-    " && mkdir -p dist && buf build --config " +
-    config.bufConfigName +
-    " proto --as-file-descriptor-set -o dist/schema.binpb && cmdproto-runtime-manifest --app-name " +
-    config.appToken +
-    " --schema dist/schema.binpb --out dist/runtime.binpb";
+    "cmdproto-build --app-name " + config.appToken + " --buf-config " + config.bufConfigName;
   pkg.scripts["cmdproto:gen"] =
-    "buf generate --template buf.gen.yaml --config " + config.bufConfigName + " proto";
+    "cmdproto-build --generate-only --buf-config " + config.bufConfigName;
 
   if (config.runtime === "ts") {
     pkg.scripts["cmdproto:run"] = "npm run cmdproto:schema --silent && tsx src/cmdproto/app.mts";
