@@ -4,8 +4,7 @@
   "description": "Proto-first ABI boundary toolkit for strict human and machine command interfaces.",
   "type": "module",
   "bin": {
-    "cmdproto-setup": "./scripts/bootstrap.mjs",
-    "cmdproto-build": "./scripts/build.mjs",
+    "cmdproto": "./scripts/cmdproto.mjs",
     "cmdproto-buf-plugin": "./scripts/buf-plugin-cmdproto",
     "cmdproto-runtime-manifest": "./scripts/runtime-manifest.mjs"
   },
@@ -23,16 +22,16 @@
     "dist/runtimes",
     "dist/wasm",
     "proto",
-    "scripts/bootstrap.mjs",
-    "scripts/build.mjs",
+    "scripts/cmdproto.mjs",
+    "scripts/lib",
     "scripts/buf-plugin-cmdproto",
     "scripts/run-wasi.mjs",
     "scripts/runtime-manifest.mjs"
   ],
   "scripts": {
     "build:wasm": "mkdir -p dist/wasm && cd tools/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-buf-plugin.wasm ./cmd/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -o ../../dist/wasm/cmdproto-runtime-manifest.wasm ./cmd/runtime-manifest",
-    "schema:build": "node ./scripts/build.mjs --app-name app",
-    "schema:build:greeter": "node ./scripts/build.mjs --app-name greeter --proto examples/greeter/proto --out-dir examples/greeter/dist",
+    "schema:build": "node ./scripts/cmdproto.mjs build --app-name app",
+    "schema:build:greeter": "node ./scripts/cmdproto.mjs build --app-name greeter --proto examples/greeter/proto --out-dir examples/greeter/dist",
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
     "test": "node --import tsx --test tests/**/*.test.ts",

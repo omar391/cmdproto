@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "cmdproto:gen": "cmdproto-build --generate-only",
-    "cmdproto:schema": "cmdproto-build --app-name greeter",
+    "cmdproto:gen": "cmdproto build --generate-only",
+    "cmdproto:schema": "cmdproto build --app-name greeter",
     "cmdproto:run": "npm run cmdproto:schema --silent && tsx src/cmdproto/app.mts",
     "check": "npm run cmdproto:gen && npm run cmdproto:schema && npm run cmdproto:run -- greet Ada -s && npm run cmdproto:run -- cmdproto execjson greet '{\"name\":\"Ada\",\"shout\":true}'"
   },

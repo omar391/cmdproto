@@ -1,16 +1,16 @@
-#!/usr/bin/env node
-
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeToken, renderUsage, requireValue } from "./cli-shared.mjs";
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const LIB_DIR = dirname(fileURLToPath(import.meta.url));
+const SCRIPTS_DIR = dirname(LIB_DIR);
 
-function main() {
-  const options = parseArgs(process.argv.slice(2));
+export function runBuild(argv) {
+  const options = parseBuildArgs(argv);
   if (options.help) {
-    process.stdout.write(`${usage()}\n`);
+    process.stdout.write(`${getBuildUsage()}\n`);
     return;
   }
 
@@ -44,7 +44,7 @@ function main() {
     config.schemaOut
   ], config.cwd);
   run(process.execPath, [
-    join(SCRIPT_DIR, "runtime-manifest.mjs"),
+    join(SCRIPTS_DIR, "runtime-manifest.mjs"),
     "--app-name",
     config.appName,
     "--schema",
@@ -54,7 +54,28 @@ function main() {
   ], config.cwd);
 }
 
-function parseArgs(argv) {
+export function getBuildUsage() {
+  return renderUsage("cmdproto build [options]", [
+    {
+      heading: "Options",
+      entries: [
+        ["--cwd <dir>", "Consumer repository root"],
+        ["--app-name <name>", "App name used in rendered machine examples"],
+        ["--proto <path>", "Proto input path, default: proto"],
+        ["--buf-config <path>", "Buf config path, default: buf.yaml"],
+        ["--buf-gen-template <p>", "Buf generate template, default: buf.gen.yaml"],
+        ["--out-dir <dir>", "Output directory, default: dist"],
+        ["--schema-out <path>", "Descriptor output, default: <out-dir>/schema.binpb"],
+        ["--runtime-out <path>", "Runtime manifest output, default: <out-dir>/runtime.binpb"],
+        ["--generate", "Run buf generate before schema build"],
+        ["--generate-only", "Run buf generate and skip schema build"],
+        ["--help", "Show this message"]
+      ]
+    }
+  ]);
+}
+
+function parseBuildArgs(argv) {
   const options = {
     appName: "",
     bufConfig: "buf.yaml",
@@ -148,46 +169,4 @@ function run(command, args, cwd) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
-}
-
-function normalizeToken(value) {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase() || "app";
-}
-
-function requireValue(argv, index, flag) {
-  const value = argv[index];
-  if (!value) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
-
-function usage() {
-  return [
-    "Usage: cmdproto-build [options]",
-    "",
-    "Options:",
-    "  --cwd <dir>              Consumer repository root",
-    "  --app-name <name>        App name used in rendered machine examples",
-    "  --proto <path>           Proto input path, default: proto",
-    "  --buf-config <path>      Buf config path, default: buf.yaml",
-    "  --buf-gen-template <p>   Buf generate template, default: buf.gen.yaml",
-    "  --out-dir <dir>          Output directory, default: dist",
-    "  --schema-out <path>      Descriptor output, default: <out-dir>/schema.binpb",
-    "  --runtime-out <path>     Runtime manifest output, default: <out-dir>/runtime.binpb",
-    "  --generate               Run buf generate before schema build",
-    "  --generate-only          Run buf generate and skip schema build",
-    "  --help                   Show this message"
-  ].join("\n");
-}
-
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
 }

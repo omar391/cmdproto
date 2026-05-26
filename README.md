@@ -73,7 +73,7 @@ npm install "cmdproto@git+https://github.com/omar391/cmdproto.git"
 After install, run:
 
 ```sh
-cmdproto-setup init
+cmdproto init
 ```
 
 That bootstrap step creates a deterministic starter layout in the consumer repo:
@@ -88,7 +88,7 @@ That bootstrap step creates a deterministic starter layout in the consumer repo:
 If the consumer repo is TypeScript, run:
 
 ```sh
-cmdproto-setup init --runtime ts
+cmdproto init --runtime ts
 ```
 
 That also creates:
@@ -98,10 +98,11 @@ That also creates:
 - `package.json` script:
   - `cmdproto:run`
 
-`cmdproto-runtime-manifest` and `cmdproto-buf-plugin` are shipped for consumers
-as package-contained WASM-backed commands, and `cmdproto-build` wraps the common
-Buf generate/lint/build plus runtime-manifest flow. Consumer machines do not
-need Go installed for schema build and lint.
+`cmdproto-buf-plugin` and the internal `cmdproto-runtime-manifest` helper are
+shipped as package-contained WASM-backed commands. Normal consumer workflows
+should use `cmdproto build`, which wraps the common Buf generate/lint/build plus
+runtime-manifest flow. Consumer machines do not need Go installed for schema
+build and lint.
 
 ## Authoring A New App
 

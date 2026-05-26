@@ -1,17 +1,12 @@
-#!/usr/bin/env node
-
 import { basename, dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { normalizeToken, renderUsage, requireValue } from "./cli-shared.mjs";
 
-function main() {
-  const { command, options } = parseArgs(process.argv.slice(2));
-  if (options.help || !command) {
-    process.stdout.write(`${usage()}\n`);
+export function runInit(argv) {
+  const options = parseInitArgs(argv);
+  if (options.help) {
+    process.stdout.write(`${getInitUsage()}\n`);
     return;
-  }
-
-  if (command !== "init") {
-    throw new Error(`Unknown command: ${command}`);
   }
 
   const config = buildConfig(options);
@@ -42,7 +37,28 @@ function main() {
   );
 }
 
-function parseArgs(argv) {
+export function getInitUsage() {
+  return renderUsage("cmdproto init [options]", [
+    {
+      heading: "Options",
+      entries: [
+        ["--cwd <dir>", "Consumer repository root"],
+        ["--buf-config-name <n>", "Buf config filename, default: buf.yaml"],
+        ["--app-name <name>", "App name used for defaults"],
+        ["--proto-package <pkg>", "Protobuf package, for example consumer.v1"],
+        ["--runtime <kind>", "Runtime template: auto, ts, or none"],
+        ["--service <name>", "Service name, for example ConsumerService"],
+        ["--method <name>", "RPC name, for example Run"],
+        ["--command <path>", "Human command path, for example run"],
+        ["--summary <text>", "Command summary"],
+        ["--force", "Overwrite generated files"],
+        ["--help", "Show this message"]
+      ]
+    }
+  ]);
+}
+
+function parseInitArgs(argv) {
   const options = {
     appName: "",
     command: "",
@@ -57,9 +73,7 @@ function parseArgs(argv) {
     summary: ""
   };
 
-  const command = argv[0] ?? "";
-
-  for (let index = 1; index < argv.length; index += 1) {
+  for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     switch (token) {
       case "--cwd":
@@ -101,7 +115,7 @@ function parseArgs(argv) {
     }
   }
 
-  return { command, options };
+  return options;
 }
 
 function buildConfig(options) {
@@ -159,9 +173,9 @@ function writePackageJson(config) {
   pkg.devDependencies ??= {};
 
   pkg.scripts["cmdproto:schema"] =
-    "cmdproto-build --app-name " + config.appToken + " --buf-config " + config.bufConfigName;
+    "cmdproto build --app-name " + config.appToken + " --buf-config " + config.bufConfigName;
   pkg.scripts["cmdproto:gen"] =
-    "cmdproto-build --generate-only --buf-config " + config.bufConfigName;
+    "cmdproto build --generate-only --buf-config " + config.bufConfigName;
 
   if (config.runtime === "ts") {
     pkg.scripts["cmdproto:run"] = "npm run cmdproto:schema --silent && tsx src/cmdproto/app.mts";
@@ -320,14 +334,6 @@ function renderTsconfig() {
 `;
 }
 
-function normalizeToken(value) {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase() || "app";
-}
-
 function resolveRuntime(runtime, packageJson, tsconfigPath) {
   if (runtime === "ts") {
     return "ts";
@@ -370,38 +376,4 @@ function toKebabCase(value) {
 
 function escapeProto(value) {
   return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-}
-
-function requireValue(argv, index, flag) {
-  const value = argv[index];
-  if (!value) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
-
-function usage() {
-  return [
-    "Usage: cmdproto-setup init [options]",
-    "",
-    "Options:",
-    "  --cwd <dir>            Consumer repository root",
-    "  --buf-config-name <n>  Buf config filename, default: buf.yaml",
-    "  --app-name <name>      App name used for defaults",
-    "  --proto-package <pkg>  Protobuf package, for example consumer.v1",
-    "  --runtime <kind>       Runtime template: auto, ts, or none",
-    "  --service <name>       Service name, for example ConsumerService",
-    "  --method <name>        RPC name, for example Run",
-    "  --command <path>       Human command path, for example run",
-    "  --summary <text>       Command summary",
-    "  --force                Overwrite generated files",
-    "  --help                 Show this message"
-  ].join("\n");
-}
-
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
 }

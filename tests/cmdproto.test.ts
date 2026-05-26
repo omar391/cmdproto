@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -40,11 +40,37 @@ function parseStdout(stdout: string) {
 }
 
 describe("cmdproto descriptors", () => {
+  it("prints root and subcommand help through the unified cli", () => {
+    const root = execFileSync(process.execPath, ["scripts/cmdproto.mjs", "--help"], {
+      encoding: "utf8"
+    });
+    const init = execFileSync(process.execPath, ["scripts/cmdproto.mjs", "init", "--help"], {
+      encoding: "utf8"
+    });
+    const build = execFileSync(process.execPath, ["scripts/cmdproto.mjs", "build", "--help"], {
+      encoding: "utf8"
+    });
+
+    assert.match(root, /Usage: cmdproto <command> \[options\]/);
+    assert.match(root, /build\s+Generate, lint, and compile cmdproto runtime artifacts/);
+    assert.match(init, /Usage: cmdproto init \[options\]/);
+    assert.match(build, /Usage: cmdproto build \[options\]/);
+  });
+
+  it("rejects unknown subcommands through the unified cli", () => {
+    const result = spawnSync(process.execPath, ["scripts/cmdproto.mjs", "nope"], {
+      encoding: "utf8"
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Unknown command: nope/);
+  });
+
   it("bootstraps consumer scripts through the package build helper", () => {
     const cwd = mkdtempSync(join(tmpdir(), "cmdproto-bootstrap-"));
 
     execFileSync(process.execPath, [
-      "scripts/bootstrap.mjs",
+      "scripts/cmdproto.mjs",
       "init",
       "--cwd",
       cwd,
@@ -54,8 +80,8 @@ describe("cmdproto descriptors", () => {
 
     const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
 
-    assert.equal(pkg.scripts["cmdproto:gen"], "cmdproto-build --generate-only --buf-config buf.yaml");
-    assert.equal(pkg.scripts["cmdproto:schema"], "cmdproto-build --app-name demo --buf-config buf.yaml");
+    assert.equal(pkg.scripts["cmdproto:gen"], "cmdproto build --generate-only --buf-config buf.yaml");
+    assert.equal(pkg.scripts["cmdproto:schema"], "cmdproto build --app-name demo --buf-config buf.yaml");
     assert.doesNotMatch(pkg.scripts["cmdproto:schema"], /buf lint|mkdir -p|runtime-manifest/);
   });
 
