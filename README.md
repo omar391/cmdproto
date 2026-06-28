@@ -207,7 +207,7 @@ In this repo specifically:
   helpers as WASM-backed commands
 - this repo still uses Go to rebuild `dist/wasm/` and to run `npm run test:plugin`
 
-The transport roadmap is tracked in [future_plan.md](/Volumes/Projects/business/AstronLab/omar391/cmdproto/future_plan.md).
+The transport roadmap is tracked in [future_plan.md](/Volumes/Projects/business/AstronLab/personal/devtools/cmdproto/future_plan.md).
 
 ## Development
 
