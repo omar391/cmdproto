@@ -8,6 +8,7 @@ options, and get one descriptor-led surface for:
 - human commands
 - per-command help
 - machine JSON execution
+- an opt-in unary Connect control plane for selected commands
 
 ## Why
 
@@ -20,14 +21,15 @@ AI apps need tools, and tool calls need contracts.
 - what JSON payload an assistant should send
 - what minimal example proves the call shape
 
-That same command ABI can later back other adapters too:
+The same command ABI can also back other adapters:
 
-- gRPC transport for remote callers
+- unary Connect for explicit remote commands (implemented)
 - MCP or JSON-RPC 2.0 transport for assistant integration
 - live event streaming over stdio, gRPC, or WebSocket
 
-Those adapters are future work, not implemented in V1. Today V1 is a strict
-manifest-driven CLI and JSON execution surface backed by protobuf descriptors.
+MCP, JSON-RPC, gRPC, and streaming adapters remain future work. The Connect
+surface is deliberately unary-only and uses the same manifest, validation,
+handler, error, CLI, and `execjson` paths as local execution.
 
 ## V1 Shape
 
@@ -53,6 +55,8 @@ same per-command `--help` surface that humans use.
 
 - `proto/` contains `cmdproto`'s own option schema.
 - `runtimes/runtime.ts` is the minimal TypeScript runtime implementation.
+- `connect/` contains opt-in unary Connect registration, caller transport, and
+  Fetch, Bun, and Node host adapters.
 - `examples/greeter/proto/` is a separate app proto, built as its own schema
   artifact.
 
@@ -97,6 +101,15 @@ That also creates:
 - `tsconfig.json` when missing
 - `package.json` script:
   - `cmdproto:run`
+
+To add an opt-in Fetch-compatible Connect handler template, run:
+
+```sh
+cmdproto init --runtime ts --connect
+```
+
+This also creates `src/cmdproto/connect.mts`. It does not bind a listener or
+choose authentication, TLS, ports, or process lifecycle for the consumer.
 
 `cmdproto-buf-plugin` and the internal `cmdproto-runtime-manifest` helper are
 shipped as package-contained WASM-backed commands. Normal consumer workflows
@@ -198,6 +211,94 @@ npm run cmdproto:schema
 `runMain({ handlers, schemaPath: "/some/other/schema.binpb", manifestPath: "/some/other/runtime.binpb" })`
 works too.
 
+## Unary Connect Control Plane
+
+Connect support is opt-in. A server must provide an explicit fully-qualified
+method allowlist and an authorization callback. An empty allowlist exposes no
+routes, and cmdproto never exposes every annotated command automatically.
+
+```ts
+import { createServer } from "node:http";
+import { createCmdProtoBunNodeHandler } from "cmdproto/connect/bun";
+import { createAppRuntime, METHOD_NAME } from "./src/cmdproto/app.mjs";
+
+const connect = createCmdProtoBunNodeHandler({
+  runtime: createAppRuntime(),
+  allowMethods: [METHOD_NAME],
+  singletonHeaders: ["x-capability"],
+  createRequestContext(request) {
+    return { capability: request.requestHeader.get("x-capability") };
+  },
+  authorize(request) {
+    return request.requestContext.capability === process.env.CONTROL_CAPABILITY;
+  }
+});
+
+const server = createServer(connect);
+// The consumer may attach server.on("upgrade", ...) on this same authority.
+server.listen(3000, "127.0.0.1");
+```
+
+`createCmdProtoBunNodeHandler()` is the production Bun choice when raw header
+fidelity matters. It runs under Bun's `node:http` compatibility layer, rejects
+duplicate auth, authority, origin, and protocol singleton headers before
+authorization, accepts custom singleton header names, and leaves WebSocket
+upgrade ownership with the same consumer-created server.
+`createCmdProtoNodeHandler()` provides the same request listener for Node.
+
+`createCmdProtoFetchHandler()` returns a standard Fetch handler.
+`createCmdProtoBunHandler()` is a native `Bun.serve` compatibility/development
+surface only: Bun currently normalizes duplicate non-cookie headers before the
+handler can inspect them. Do not use it for a production control plane; use the
+Bun-node adapter so authentication and capability headers retain raw fidelity.
+
+Remote CLI and `execjson` calls select methods explicitly. Methods not in
+`remoteMethods` continue to execute in process:
+
+```ts
+import { createCmdProtoConnectTransport } from "cmdproto/connect";
+
+const transport = createCmdProtoConnectTransport({
+  remoteMethods: [METHOD_NAME],
+  baseUrl: "http://127.0.0.1:3000",
+  headers: { authorization: `Bearer ${process.env.CONTROL_TOKEN}` }
+});
+
+await runMain({ handlers, transport });
+```
+
+The canonical route is descriptor-derived:
+`/<protobuf.package.Service>/<Method>`. Binary protobuf is the normative wire
+format. Strict Connect JSON is available for diagnostics. Responses are the
+declared protobuf response directly, without cmdproto result/stdout envelopes.
+Typed cmdproto failures map to canonical Connect codes; JSON-compatible details
+round-trip as `google.protobuf.Value` error details. Internal and unknown custom
+`CmdProtoError` messages/details and untyped exceptions are not exposed. A
+handler or interceptor that deliberately throws `ConnectError` is declaring a
+public wire error and its message, metadata, and details pass through; never put
+secrets in an explicit `ConnectError`.
+
+There are no REST aliases, listeners, TLS lifecycle, auth lifecycle, streaming
+RPCs, or automatic all-command exposure in this package.
+
+### Connect conformance scope
+
+The official `connectrpc/conformance` runner passes all 88 applicable unary
+Connect HTTP/1, identity-compression, protobuf/JSON server cases for the Node,
+Fetch, and production Bun-node adapters. The native `Bun.serve` Fetch host
+passes 81/88; its seven excluded cases require duplicate request-header
+preservation that Bun 1.3.14 removes before handler entry (Basic unary proto and
+JSON, Duplicate Metadata success/error proto and JSON, and Server Empty Requests).
+
+Streaming, Connect GET, compression, TLS, HTTP/2+, gRPC, and gRPC-Web cases are
+outside this intentionally unary adapter contract.
+
+Reproduce the matrix with `npm run test:connect-conformance`. The checked
+fixture pins both the official conformance runner and the matching Connect-ES
+conformance service by commit, downloads them into ignored `tmp/`, and asserts
+the expected case totals. This slower network/Go/Bun check is intentionally not
+part of `npm run check`.
+
 In this repo specifically:
 
 - `npm run schema:build` builds the library's own `proto/` schema to `dist/schema.binpb` and `dist/runtime.binpb`.
@@ -207,7 +308,7 @@ In this repo specifically:
   helpers as WASM-backed commands
 - this repo still uses Go to rebuild `dist/wasm/` and to run `npm run test:plugin`
 
-The transport roadmap is tracked in [future_plan.md](/Volumes/Projects/business/AstronLab/personal/devtools/cmdproto/future_plan.md).
+The remaining transport roadmap is tracked in [future_plan.md](future_plan.md).
 
 ## Development
 

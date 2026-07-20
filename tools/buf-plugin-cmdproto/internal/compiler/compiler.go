@@ -22,13 +22,14 @@ import (
 )
 
 const (
-	commandOptionName = protoreflect.FullName("cmdproto.v1.command")
-	paramOptionName   = protoreflect.FullName("cmdproto.v1.param")
+	commandOptionName           = protoreflect.FullName("cmdproto.v1.command")
+	paramOptionName             = protoreflect.FullName("cmdproto.v1.param")
 	messageJSONSchemaOptionName = protoreflect.FullName("cmdproto.v1.message_json_schema")
 	fieldJSONSchemaOptionName   = protoreflect.FullName("cmdproto.v1.field_json_schema")
 
-	manifestVersion = 1
-	helpJSONVersion = 2
+	manifestVersion           = 1
+	helpJSONVersion           = 2
+	maxJSONSchemaMessageDepth = 64
 
 	executeName    = "cmdproto execjson"
 	executeUsage   = "cmdproto execjson <path> <json|@file|@->"
@@ -356,6 +357,12 @@ func analyzeMethods(ctx *schemaContext, files []protoreflect.FileDescriptor) ([]
 				}
 				if !ok {
 					continue
+				}
+				if method.IsStreamingClient() || method.IsStreamingServer() {
+					issues = append(issues, Issue{
+						Descriptor: method,
+						Message:    string(method.FullName()) + " cmdproto command methods must be unary",
+					})
 				}
 
 				spec := &methodSpec{
@@ -1947,15 +1954,15 @@ func buildCommandHelpJSON(
 		examples = append(examples, entry)
 	}
 	return struct {
-		Method          string         `json:"method"`
-		Path            string         `json:"path"`
-		Aliases         []string       `json:"aliases,omitempty"`
-		InputType       string         `json:"input_type"`
-		OutputType      string         `json:"output_type"`
-		MachineUsage    string         `json:"machine_usage"`
-		PayloadJSONSchema any          `json:"payload_json_schema"`
-		PayloadSchema   map[string]any `json:"payload_schema"`
-		Examples        []map[string]any `json:"examples"`
+		Method            string           `json:"method"`
+		Path              string           `json:"path"`
+		Aliases           []string         `json:"aliases,omitempty"`
+		InputType         string           `json:"input_type"`
+		OutputType        string           `json:"output_type"`
+		MachineUsage      string           `json:"machine_usage"`
+		PayloadJSONSchema any              `json:"payload_json_schema"`
+		PayloadSchema     map[string]any   `json:"payload_schema"`
+		Examples          []map[string]any `json:"examples"`
 	}{
 		Method:            command.GetMethod(),
 		Path:              command.GetPreferredMachinePath(),
@@ -1973,11 +1980,43 @@ func buildMessageJSONSchema(
 	message protoreflect.MessageDescriptor,
 	ctx *schemaContext,
 ) (any, error) {
+	return buildMessageJSONSchemaWithState(message, ctx, &jsonSchemaBuildState{
+		active: make(map[protoreflect.FullName]struct{}),
+	})
+}
+
+type jsonSchemaBuildState struct {
+	active map[protoreflect.FullName]struct{}
+	depth  int
+}
+
+func buildMessageJSONSchemaWithState(
+	message protoreflect.MessageDescriptor,
+	ctx *schemaContext,
+	state *jsonSchemaBuildState,
+) (any, error) {
 	if override, ok, err := messageJSONSchemaOverride(message, ctx); err != nil {
 		return nil, err
 	} else if ok {
 		return override, nil
 	}
+	messageID := "cmdproto://message/" + string(message.FullName())
+	if _, ok := state.active[message.FullName()]; ok {
+		return map[string]any{"$ref": messageID}, nil
+	}
+	if state.depth >= maxJSONSchemaMessageDepth {
+		return nil, fmt.Errorf(
+			"%s json schema expansion exceeds maximum message depth %d; add a cmdproto field_json_schema or message_json_schema override",
+			message.FullName(),
+			maxJSONSchemaMessageDepth,
+		)
+	}
+	state.active[message.FullName()] = struct{}{}
+	state.depth += 1
+	defer func() {
+		delete(state.active, message.FullName())
+		state.depth -= 1
+	}()
 
 	required := make([]string, 0)
 	properties := make(map[string]any)
@@ -1987,7 +2026,7 @@ func buildMessageJSONSchema(
 		if field.Cardinality() == protoreflect.Required {
 			required = append(required, string(field.JSONName()))
 		}
-		schema, err := buildFieldJSONSchema(field, ctx)
+		schema, err := buildFieldJSONSchema(field, ctx, state)
 		if err != nil {
 			return nil, err
 		}
@@ -1996,7 +2035,7 @@ func buildMessageJSONSchema(
 
 	return map[string]any{
 		"$schema":              "https://json-schema.org/draft/2020-12/schema",
-		"$id":                  "cmdproto://message/" + string(message.FullName()),
+		"$id":                  messageID,
 		"title":                string(message.FullName()),
 		"type":                 "object",
 		"additionalProperties": false,
@@ -2008,6 +2047,7 @@ func buildMessageJSONSchema(
 func buildFieldJSONSchema(
 	field protoreflect.FieldDescriptor,
 	ctx *schemaContext,
+	state *jsonSchemaBuildState,
 ) (any, error) {
 	if override, ok, err := fieldJSONSchemaOverride(field, ctx); err != nil {
 		return nil, err
@@ -2017,7 +2057,7 @@ func buildFieldJSONSchema(
 
 	switch {
 	case field.IsMap():
-		valueSchema, err := buildFieldJSONSchema(field.MapValue(), ctx)
+		valueSchema, err := buildFieldJSONSchema(field.MapValue(), ctx, state)
 		if err != nil {
 			return nil, err
 		}
@@ -2026,7 +2066,7 @@ func buildFieldJSONSchema(
 			"additionalProperties": valueSchema,
 		}, nil
 	case field.IsList():
-		itemSchema, err := buildListItemJSONSchema(field, ctx)
+		itemSchema, err := buildListItemJSONSchema(field, ctx, state)
 		if err != nil {
 			return nil, err
 		}
@@ -2035,7 +2075,7 @@ func buildFieldJSONSchema(
 			"items": itemSchema,
 		}, nil
 	case field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind:
-		return buildMessageJSONSchema(field.Message(), ctx)
+		return buildMessageJSONSchemaWithState(field.Message(), ctx, state)
 	case field.Kind() == protoreflect.EnumKind:
 		return enumJSONSchema(field.Enum()), nil
 	default:
@@ -2046,10 +2086,11 @@ func buildFieldJSONSchema(
 func buildListItemJSONSchema(
 	field protoreflect.FieldDescriptor,
 	ctx *schemaContext,
+	state *jsonSchemaBuildState,
 ) (any, error) {
 	switch field.Kind() {
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		return buildMessageJSONSchema(field.Message(), ctx)
+		return buildMessageJSONSchemaWithState(field.Message(), ctx, state)
 	case protoreflect.EnumKind:
 		return enumJSONSchema(field.Enum()), nil
 	default:

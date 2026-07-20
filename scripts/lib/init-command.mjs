@@ -19,6 +19,9 @@ export function runInit(argv) {
 
   if (config.runtime === "ts") {
     writes.push(writeTextFile(config.runtimePath, renderRuntimeTemplate(config), config.force));
+    if (config.connect) {
+      writes.push(writeTextFile(config.connectPath, renderConnectTemplate(), config.force));
+    }
     if (!existsSync(config.tsconfigPath)) {
       writes.push(writeTextFile(config.tsconfigPath, renderTsconfig(), false));
     }
@@ -47,6 +50,7 @@ export function getInitUsage() {
         ["--app-name <name>", "App name used for defaults"],
         ["--proto-package <pkg>", "Protobuf package, for example consumer.v1"],
         ["--runtime <kind>", "Runtime template: auto, ts, or none"],
+        ["--connect", "Add an opt-in Fetch-compatible unary Connect handler"],
         ["--service <name>", "Service name, for example ConsumerService"],
         ["--method <name>", "RPC name, for example Run"],
         ["--command <path>", "Human command path, for example run"],
@@ -62,6 +66,7 @@ function parseInitArgs(argv) {
   const options = {
     appName: "",
     command: "",
+    connect: false,
     bufConfigName: "buf.yaml",
     cwd: process.cwd(),
     force: false,
@@ -103,6 +108,9 @@ function parseInitArgs(argv) {
       case "--runtime":
         options.runtime = requireValue(argv, ++index, token);
         break;
+      case "--connect":
+        options.connect = true;
+        break;
       case "--force":
         options.force = true;
         break;
@@ -133,7 +141,12 @@ function buildConfig(options) {
   const packageJson = existsSync(packageJsonPath)
     ? JSON.parse(readFileSync(packageJsonPath, "utf8"))
     : null;
-  const runtime = resolveRuntime(options.runtime, packageJson, tsconfigPath);
+  const runtime = options.connect && options.runtime === "auto"
+    ? "ts"
+    : resolveRuntime(options.runtime, packageJson, tsconfigPath);
+  if (options.connect && runtime !== "ts") {
+    throw new Error("--connect requires the TypeScript runtime template");
+  }
 
   return {
     appName,
@@ -142,6 +155,8 @@ function buildConfig(options) {
     bufConfigPath: join(cwd, options.bufConfigName),
     bufGenPath: join(cwd, "buf.gen.yaml"),
     commandPath,
+    connect: options.connect,
+    connectPath: join(cwd, "src/cmdproto/connect.mts"),
     cwd,
     force: options.force,
     method,
@@ -314,6 +329,28 @@ if (process.argv[1] && process.argv[1].endsWith("app.mts")) {
     handlers,
     schemaPath: SCHEMA_PATH,
     manifestPath: MANIFEST_PATH
+  });
+}
+`;
+}
+
+function renderConnectTemplate() {
+  return `import type { CmdProtoConnectServerOptions } from "cmdproto/connect";
+import { createCmdProtoFetchHandler } from "cmdproto/connect/fetch";
+import { createAppRuntime, METHOD_NAME } from "./app.mjs";
+
+type ConnectAuthorization<RequestContext> = Pick<
+  CmdProtoConnectServerOptions<RequestContext>,
+  "authorize" | "createRequestContext"
+>;
+
+export function createConnectHandler<RequestContext = undefined>(
+  authorization: ConnectAuthorization<RequestContext>
+) {
+  return createCmdProtoFetchHandler({
+    ...authorization,
+    runtime: createAppRuntime(),
+    allowMethods: [METHOD_NAME]
   });
 }
 `;

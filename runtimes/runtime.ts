@@ -13,9 +13,12 @@ import {
   type DescField,
   type DescMessage,
   type DescMethod,
+  type DescMethodUnary,
   type FileRegistry,
   type JsonObject as BufJsonObject,
-  type JsonValue
+  type JsonValue,
+  type Message,
+  type MessageShape
 } from "@bufbuild/protobuf";
 import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import {
@@ -29,6 +32,9 @@ import {
   type RuntimeManifest,
   type RuntimeParam
 } from "./gen/cmdproto/v1/runtime_pb.js";
+import { CmdProtoError } from "./errors.js";
+
+export { CmdProtoError } from "./errors.js";
 
 export type JsonObject = BufJsonObject;
 
@@ -138,6 +144,7 @@ export interface HandlerContext {
   methodName: string;
   descriptor: DescMethod;
   request: CommandRequestJson;
+  requestContext?: unknown;
 }
 
 export type CmdProtoHandler = (
@@ -158,11 +165,29 @@ export interface AppOptions {
   schemaPath?: string;
   manifestPath?: string;
   renderHuman?: HumanRenderer;
+  transport?: CommandTransport;
 }
 
 export interface RunMainOptions extends AppOptions {
   argv?: string[];
   stdin?: string;
+}
+
+export interface CommandDispatchOptions {
+  requestContext?: unknown;
+}
+
+export interface CommandTransport {
+  dispatch(
+    runtime: CmdProtoRuntime,
+    request: CommandRequestJson
+  ): Promise<CommandOutcome>;
+}
+
+export interface ProtobufCommandRequest {
+  request: CommandRequestJson;
+  method: DescMethodUnary;
+  message: Message;
 }
 
 const COMMAND_OPTION = "cmdproto.v1.command";
@@ -196,18 +221,6 @@ interface CommandBinding {
   method: MethodSpec;
   source: string;
   positionalCount: number;
-}
-
-export class CmdProtoError extends Error {
-  readonly code: string;
-  readonly details?: JsonValue;
-
-  constructor(code: string, message: string, details?: JsonValue) {
-    super(message);
-    this.name = "CmdProtoError";
-    this.code = code;
-    this.details = details;
-  }
 }
 
 export function commandOutcome(
@@ -298,6 +311,9 @@ function discoverMethods(
     for (const method of descriptor.methods) {
       if (!hasOption(method, commandOption)) {
         continue;
+      }
+      if (method.methodKind !== "unary") {
+        throw new Error(`${descriptor.typeName}.${method.name} cmdproto command methods must be unary`);
       }
 
       const command = normalizeCommandOptions(
@@ -767,7 +783,10 @@ export class CmdProtoRuntime {
     this.renderHuman = renderHuman;
   }
 
-  async dispatch(input: unknown): Promise<CommandOutcome> {
+  async dispatch(
+    input: unknown,
+    options: CommandDispatchOptions = {}
+  ): Promise<CommandOutcome> {
     const request = normalizeRequest(input);
 
     const descriptor = this.schema.methodByName.get(request.method);
@@ -784,7 +803,8 @@ export class CmdProtoRuntime {
     const context: HandlerContext = {
       methodName: request.method,
       descriptor,
-      request
+      request,
+      requestContext: options.requestContext
     };
     const rawResult = await handler(params, context);
     const rawOutcome = isCommandOutcome(rawResult)
@@ -794,6 +814,67 @@ export class CmdProtoRuntime {
       validateResult(this.schema, descriptor, rawOutcome.result),
       { statusCode: rawOutcome.statusCode }
     );
+  }
+
+  prepareProtobufRequest(input: unknown): ProtobufCommandRequest {
+    const request = normalizeRequest(input);
+    const method = this.requireUnaryCommand(request.method);
+    const params = validateParams(this.schema, method, request.params ?? {});
+    return {
+      request: { ...request, params },
+      method,
+      message: fromJson(method.input, params, {
+        ignoreUnknownFields: false,
+        registry: this.schema.registry
+      })
+    };
+  }
+
+  decodeProtobufResponse(
+    methodName: string,
+    message: MessageShape<DescMessage>
+  ): CommandOutcome {
+    const method = this.requireUnaryCommand(methodName);
+    const result = validateResult(
+      this.schema,
+      method,
+      toJson(method.output, message, { registry: this.schema.registry }) as JsonValue
+    );
+    return commandOutcome(result);
+  }
+
+  async dispatchProtobuf(
+    methodName: string,
+    message: MessageShape<DescMessage>,
+    options: CommandDispatchOptions = {}
+  ): Promise<Message> {
+    const method = this.requireUnaryCommand(methodName);
+    const params = toJson(method.input, message, {
+      registry: this.schema.registry
+    }) as JsonValue;
+    const outcome = await this.dispatch({ method: methodName, params }, options);
+    return fromJson(
+      method.output,
+      wrapTransparentOutputResult(method.output, outcome.result),
+      {
+        ignoreUnknownFields: false,
+        registry: this.schema.registry
+      }
+    );
+  }
+
+  private requireUnaryCommand(methodName: string): DescMethodUnary {
+    const command = this.commandByMethod.get(methodName);
+    if (!command) {
+      throw new CmdProtoError("METHOD_NOT_FOUND", `Unknown command method: ${methodName}`);
+    }
+    if (command.method.methodKind !== "unary") {
+      throw new CmdProtoError(
+        "UNIMPLEMENTED",
+        `Cmdproto command method must be unary: ${methodName}`
+      );
+    }
+    return command.method as DescMethodUnary;
   }
 }
 
@@ -949,13 +1030,14 @@ export async function executeApp({
   schemaPath = getDefaultSchemaPath(),
   manifestPath = getDefaultManifestPath(),
   renderHuman,
+  transport,
   argv = process.argv.slice(2),
   stdin
 }: RunMainOptions): Promise<CliResult> {
-  // The app runtime stays transport-neutral. Today `runCli()` is the one-shot
-  // stdio adapter; future HTTP and streaming adapters should sit beside it.
+  // The app runtime stays transport-neutral. `runCli()` owns one-shot
+  // presentation and may delegate a finite command through an explicit transport.
   const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath, renderHuman);
-  return runCli(runtime, argv, await resolveCliStdin(argv, stdin));
+  return runCli(runtime, argv, await resolveCliStdin(argv, stdin), transport);
 }
 
 export async function runMain(options: RunMainOptions): Promise<CliResult> {
@@ -969,7 +1051,8 @@ export async function runMain(options: RunMainOptions): Promise<CliResult> {
 export async function runCli(
   runtime: CmdProtoRuntime,
   argv: string[],
-  stdin = ""
+  stdin = "",
+  transport?: CommandTransport
 ): Promise<CliResult> {
   const normalizedArgv = normalizeCliArgv(argv);
   try {
@@ -978,13 +1061,18 @@ export async function runCli(
       return helpResult;
     }
 
-    const controlResult = await runCmdprotoCommand(runtime, normalizedArgv, stdin);
+    const controlResult = await runCmdprotoCommand(
+      runtime,
+      normalizedArgv,
+      stdin,
+      transport
+    );
     if (controlResult) {
       return controlResult;
     }
 
     const request = parseManifestHumanCommand(runtime, normalizedArgv, stdin);
-    const outcome = await runtime.dispatch(request);
+    const outcome = await dispatchCommand(runtime, request, transport);
     return renderHumanResult(runtime, outcome, request);
   } catch (error) {
     return isCmdprotoControl(normalizedArgv)
@@ -1346,10 +1434,10 @@ export function renderHelp(schema: CmdProtoSchema): string {
 async function runCmdprotoCommand(
   runtime: CmdProtoRuntime,
   argv: string[],
-  stdin: string
+  stdin: string,
+  transport?: CommandTransport
 ): Promise<CliResult | undefined> {
-  // This is the one-shot stdio control surface. If we later add live streams,
-  // they should come from a persistent transport mode instead of this command.
+  // This one-shot control surface deliberately handles finite command invocations.
   if (argv[0] !== "cmdproto") {
     return undefined;
   }
@@ -1370,10 +1458,10 @@ async function runCmdprotoCommand(
       executeArgv[executeArgv.length - 1],
       stdin
     ) as JsonValue;
-    const outcome = await runtime.dispatch({
+    const outcome = await dispatchCommand(runtime, {
       method: match.command.manifest.method,
       params
-    });
+    }, transport);
     return jsonTextResult(outcome.result, outcome.statusCode);
   }
 
@@ -1381,6 +1469,16 @@ async function runCmdprotoCommand(
     "INVALID_ARGUMENT",
     `Unknown cmdproto command: ${argv.slice(1).join(" ")}`
   );
+}
+
+function dispatchCommand(
+  runtime: CmdProtoRuntime,
+  request: CommandRequestJson,
+  transport?: CommandTransport
+): Promise<CommandOutcome> {
+  return transport
+    ? transport.dispatch(runtime, request)
+    : runtime.dispatch(request);
 }
 
 function runRuntimeHelpCommand(runtime: CmdProtoRuntime, argv: string[]): CliResult | undefined {

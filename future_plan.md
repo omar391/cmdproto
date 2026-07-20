@@ -1,26 +1,28 @@
 # Future Plan
 
-This file only covers work that is **not implemented in V1**.
+This file only covers work that is not implemented in the current release.
 
-## Current V1 stance
+## Current stance
 
 - `cmdproto` is descriptor-plus-manifest driven.
 - Execution is unary: one request in, one final response out.
 - Per-command `--help` and `--help --json` are the public introspection
   surfaces.
 - `cmdproto execjson <path> <json|@file|@->` is the machine execution entrypoint.
+- Explicitly selected unary commands can use the opt-in Connect server and
+  caller transport with Fetch, Bun, or Node hosting.
 
 ## Future adapters
 
 The same command ABI should be reusable across multiple transports:
 
 - stdio command execution and future long-lived local agent sessions
-- gRPC transport for remote clients
+- gRPC transport for remote clients beyond the implemented unary Connect path
 - MCP or JSON-RPC 2.0 transport for assistant integrations
 
-V1 does not implement those adapters yet. The goal is to keep the current
-descriptor set plus generated manifest small enough that those adapters can sit
-around the same core rather than redefining the tool contract.
+The goal is to keep the descriptor set plus generated manifest small enough
+that future adapters can sit around the same core rather than redefining the
+tool contract.
 
 ## Future streaming
 

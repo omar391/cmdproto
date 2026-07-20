@@ -239,6 +239,36 @@ message SessionCreateResponse {
 	}
 }
 
+func TestBufLintRejectsStreamingCommandMethods(t *testing.T) {
+	workspace := writeWorkspace(t, `
+edition = "2024";
+
+package app.v1;
+
+import "cmdproto/v1/options.proto";
+
+service AppService {
+  rpc Watch(WatchRequest) returns (stream WatchResponse) {
+    option (cmdproto.v1.command) = {
+      path: "watch"
+      example: {
+        command: "watch"
+        request_json: "{}"
+      }
+    };
+  }
+}
+
+message WatchRequest {}
+message WatchResponse {}
+`)
+
+	output := runBufLintExpectFailure(t, workspace)
+	if !strings.Contains(output, "cmdproto command methods must be unary") {
+		t.Fatalf("expected unary command error, got:\n%s", output)
+	}
+}
+
 func TestBufLintRejectsNonObjectExamplePayload(t *testing.T) {
 	workspace := writeWorkspace(t, `
 edition = "2024";
