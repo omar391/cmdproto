@@ -8,7 +8,8 @@ options, and get one descriptor-led surface for:
 - human commands
 - per-command help
 - machine JSON execution
-- an opt-in unary Connect control plane for selected commands
+- a unary Connect control plane for selected commands with package-owned
+  internal bootstrap and on-demand ensure-running support
 
 ## Why
 
@@ -55,8 +56,8 @@ same per-command `--help` surface that humans use.
 
 - `proto/` contains `cmdproto`'s own option schema.
 - `runtimes/runtime.ts` is the minimal TypeScript runtime implementation.
-- `connect/` contains opt-in unary Connect registration, caller transport, and
-  Fetch, Bun, and Node host adapters.
+- `connect/` contains unary Connect registration, caller transport, Fetch, Bun,
+  and Node host adapters, plus the package-owned dual-mode bootstrap.
 - `examples/greeter/proto/` is a separate app proto, built as its own schema
   artifact.
 
@@ -213,9 +214,11 @@ works too.
 
 ## Unary Connect Control Plane
 
-Connect support is opt-in. A server must provide an explicit fully-qualified
-method allowlist and an authorization callback. An empty allowlist exposes no
-routes, and cmdproto never exposes every annotated command automatically.
+Connect support is opt-in per consumer, but the server bootstrap is owned by
+cmdproto. A consumer provides an explicit fully-qualified method allowlist, an
+authorization callback, and one mount/lifecycle hook for its existing listener.
+An empty allowlist exposes no routes, and cmdproto never exposes every
+annotated command automatically.
 
 ```ts
 import { createServer } from "node:http";
@@ -251,6 +254,41 @@ upgrade ownership with the same consumer-created server.
 surface only: Bun currently normalizes duplicate non-cookie headers before the
 handler can inspect them. Do not use it for a production control plane; use the
 Bun-node adapter so authentication and capability headers retain raw fidelity.
+
+### CLI-first dual mode
+
+Consumers can expose the same handler map through a reserved package-owned
+internal mode without adding a public `serve` command:
+
+```ts
+import { runMain } from "cmdproto";
+import { createCmdProtoInternalServer } from "cmdproto/connect/bootstrap";
+
+await runMain({
+  handlers,
+  internalServer: createCmdProtoInternalServer({
+    allowMethods: [METHOD_NAME],
+    authorize,
+    mount: (handler) => appListener.mountConnect(handler)
+  })
+});
+```
+
+Services which already own their listener can provide `start(runtime)` instead
+of the mount configuration; the two lifecycle forms are mutually exclusive.
+Cmdproto still performs the reserved-mode dispatch and passes the descriptor-led
+runtime to that lifecycle hook.
+
+Native clients call `ensureCmdProtoServer({ readCapability, ... })`. If the
+capability is absent, cmdproto starts the same executable with the reserved
+`--cmdproto-internal-connect` argument and waits for the consumer's capability
+to appear. Calls with the same explicit `lockKey`, or the same capability-reader
+function when no key is supplied, share one in-process startup. Independent
+readers remain independent, and a concurrent child that exits non-zero keeps
+polling for the winning process's capability through the configured timeout.
+Clean exits, signals, and spawn errors remain prompt failures. Existing
+operational `start` commands can remain, but generated clients never need to
+shell to them.
 
 Remote CLI and `execjson` calls select methods explicitly. Methods not in
 `remoteMethods` continue to execute in process:

@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -17,6 +18,7 @@ import {
   CmdProtoError,
   commandOutcome,
   createRuntimeFromFile,
+  executeApp,
   getDefaultManifestPath,
   loadSchemaFromFile,
   parseHumanCommand,
@@ -27,6 +29,11 @@ import {
   type MethodSpec,
   type ParamOptions
 } from "../runtimes/runtime.js";
+import { CMDPROTO_INTERNAL_CONNECT_ARG } from "../runtimes/runtime.js";
+import {
+  createCmdProtoInternalServer,
+  ensureCmdProtoServer
+} from "../connect/bootstrap.js";
 import { createCmdProtoConnectTransport } from "../connect/core.js";
 import {
   createCmdProtoBunHandler,
@@ -139,9 +146,68 @@ describe("cmdproto descriptors", () => {
     const source = readFileSync(join(cwd, "src/cmdproto/connect.mts"), "utf8");
 
     assert.match(source, /createCmdProtoFetchHandler/);
+    assert.match(source, /createCmdProtoInternalServer/);
+    assert.match(source, /createInternalConnectServer/);
     assert.match(source, /allowMethods:\s*\[METHOD_NAME\]/);
     assert.match(source, /authorize/);
     assert.doesNotMatch(source, /\.listen\(|Bun\.serve|createServer/);
+  });
+
+  it("keeps a consumer CLI-first while reserving a package-owned server mode", async () => {
+    const runtime = createGreeterRuntime();
+    let serverRuns = 0;
+    const internalServer = createCmdProtoInternalServer({
+      allowMethods: [GREETER_METHOD],
+      authorize: () => true,
+      mount: () => {
+        serverRuns += 1;
+        return { closed: Promise.resolve() };
+      }
+    });
+
+    const result = await executeApp({
+      handlers: runtime.handlers,
+      schemaPath: GREETER_SCHEMA_PATH,
+      manifestPath: GREETER_MANIFEST_PATH,
+      argv: [CMDPROTO_INTERNAL_CONNECT_ARG],
+      internalServer
+    });
+
+    assert.deepEqual(result, { statusCode: 0, stdout: "", stderr: "" });
+    assert.equal(serverRuns, 1);
+
+    const cli = await executeApp({
+      handlers: runtime.handlers,
+      schemaPath: GREETER_SCHEMA_PATH,
+      manifestPath: GREETER_MANIFEST_PATH,
+      argv: ["greet", "Ada"]
+    });
+    assert.deepEqual(JSON.parse(cli.stdout), { message: "Hello, Ada!" });
+  });
+
+  it("ensures a missing capability by spawning the same executable in internal mode", async () => {
+    type Capability = { readonly baseUrl: string };
+    let capability: Capability | undefined;
+    let spawned: { executable: string; args: readonly string[] } | undefined;
+    const child = new EventEmitter();
+    Object.assign(child, { unref: () => child });
+    const value = await ensureCmdProtoServer<Capability>({
+      lockKey: `test-${process.pid}-${Date.now()}`,
+      readCapability: () => capability,
+      executable: process.execPath,
+      args: ["consumer-entry.mjs"],
+      pollMs: 1,
+      timeoutMs: 1_000,
+      spawn: ((executable: string, args: readonly string[]) => {
+        spawned = { executable, args };
+        queueMicrotask(() => { capability = { baseUrl: "http://127.0.0.1:4312" }; });
+        return child;
+      }) as unknown as typeof import("node:child_process").spawn
+    });
+
+    assert.deepEqual(value, { baseUrl: "http://127.0.0.1:4312" });
+    assert.equal(spawned?.executable, process.execPath);
+    assert.deepEqual(spawned?.args, ["consumer-entry.mjs", CMDPROTO_INTERNAL_CONNECT_ARG]);
   });
 
   it("discovers command paths and param bindings from the descriptor set", () => {

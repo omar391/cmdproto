@@ -1,0 +1,32 @@
+edition = "2024";
+
+package demo.v1;
+
+import "cmdproto/v1/options.proto";
+
+service DemoService {
+  rpc Ping(PingRequest) returns (PingResponse) {
+    option (cmdproto.v1.command) = {
+      path: "ping"
+      summary: "Return a deterministic greeting."
+      example: {
+        command: "ping Ada"
+        description: "Ping the demo consumer."
+        request_json: "{\"name\":\"Ada\"}"
+      }
+    };
+  }
+}
+
+message PingRequest {
+  string name = 1 [
+    (cmdproto.v1.param) = {
+      positional: { index: 1 }
+      help: "Name to greet."
+    }
+  ];
+}
+
+message PingResponse {
+  string message = 1;
+}

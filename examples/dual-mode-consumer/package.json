@@ -1,0 +1,21 @@
+{
+  "name": "cmdproto-dual-mode-consumer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cmdproto:gen": "cmdproto build --generate-only",
+    "cmdproto:schema": "cmdproto build --app-name demo",
+    "cmdproto:run": "npm run cmdproto:schema --silent && tsx src/app.ts",
+    "typecheck": "tsc --noEmit",
+    "test:lifecycle": "tsx src/client.mts",
+    "check": "npm run cmdproto:gen && npm run cmdproto:schema && npm run typecheck && npm run cmdproto:run -- ping Ada"
+  },
+  "dependencies": {
+    "cmdproto": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

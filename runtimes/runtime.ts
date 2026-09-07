@@ -171,6 +171,22 @@ export interface AppOptions {
 export interface RunMainOptions extends AppOptions {
   argv?: string[];
   stdin?: string;
+  /** Reserved package-owned mode used by ensureCmdProtoServer. */
+  internalServer?: CmdProtoInternalServer;
+}
+
+/** Consumer lifecycle callback for the reserved internal Connect mode. */
+export interface CmdProtoInternalServer {
+  run(runtime: CmdProtoRuntime): Promise<void> | void;
+}
+
+/** Reserved argument; consumers should not expose this in human help. */
+export const CMDPROTO_INTERNAL_CONNECT_ARG = "--cmdproto-internal-connect" as const;
+
+export function isCmdProtoInternalServerInvocation(
+  argv = process.argv.slice(2)
+): boolean {
+  return normalizeCliArgv(argv)[0] === CMDPROTO_INTERNAL_CONNECT_ARG;
 }
 
 export interface CommandDispatchOptions {
@@ -1031,12 +1047,21 @@ export async function executeApp({
   manifestPath = getDefaultManifestPath(),
   renderHuman,
   transport,
+  internalServer,
   argv = process.argv.slice(2),
   stdin
 }: RunMainOptions): Promise<CliResult> {
   // The app runtime stays transport-neutral. `runCli()` owns one-shot
   // presentation and may delegate a finite command through an explicit transport.
   const runtime = createRuntimeFromFile(handlers, schemaPath, manifestPath, renderHuman);
+  const normalizedArgv = normalizeCliArgv(argv);
+  if (isCmdProtoInternalServerInvocation(normalizedArgv)) {
+    if (internalServer === undefined) {
+      throw new CmdProtoError("INVALID_REQUEST", "The reserved cmdproto internal server mode is not configured.");
+    }
+    await internalServer.run(runtime);
+    return { statusCode: 0, stdout: "", stderr: "" };
+  }
   return runCli(runtime, argv, await resolveCliStdin(argv, stdin), transport);
 }
 

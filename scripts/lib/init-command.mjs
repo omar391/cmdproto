@@ -337,6 +337,7 @@ if (process.argv[1] && process.argv[1].endsWith("app.mts")) {
 function renderConnectTemplate() {
   return `import type { CmdProtoConnectServerOptions } from "cmdproto/connect";
 import { createCmdProtoFetchHandler } from "cmdproto/connect/fetch";
+import { createCmdProtoInternalServer, type CmdProtoConnectMount } from "cmdproto/connect/bootstrap";
 import { createAppRuntime, METHOD_NAME } from "./app.mjs";
 
 type ConnectAuthorization<RequestContext> = Pick<
@@ -350,6 +351,18 @@ export function createConnectHandler<RequestContext = undefined>(
   return createCmdProtoFetchHandler({
     ...authorization,
     runtime: createAppRuntime(),
+    allowMethods: [METHOD_NAME]
+  });
+}
+
+/** Mount this callback into the app's existing listener for reserved startup. */
+export function createInternalConnectServer<RequestContext = undefined>(
+  authorization: ConnectAuthorization<RequestContext>,
+  mount: CmdProtoConnectMount["mount"]
+) {
+  return createCmdProtoInternalServer({
+    ...authorization,
+    mount,
     allowMethods: [METHOD_NAME]
   });
 }

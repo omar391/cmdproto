@@ -31,6 +31,10 @@
     "./connect/node": {
       "types": "./dist/connect/node.d.ts",
       "import": "./dist/connect/node.js"
+    },
+    "./connect/bootstrap": {
+      "types": "./dist/connect/bootstrap.d.ts",
+      "import": "./dist/connect/bootstrap.js"
     }
   },
   "files": [
@@ -49,13 +53,14 @@
     "build:wasm": "mkdir -p dist/wasm && cd tools/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -trimpath -o ../../dist/wasm/cmdproto-buf-plugin.wasm ./cmd/buf-plugin-cmdproto && GOOS=wasip1 GOARCH=wasm go build -trimpath -o ../../dist/wasm/cmdproto-runtime-manifest.wasm ./cmd/runtime-manifest",
     "schema:build": "node ./scripts/cmdproto.mjs build --app-name app",
     "schema:build:greeter": "node ./scripts/cmdproto.mjs build --app-name greeter --proto examples/greeter/proto --out-dir examples/greeter/dist",
+    "schema:build:dual-mode": "node ./scripts/cmdproto.mjs build --app-name demo --proto examples/dual-mode-consumer/proto --out-dir examples/dual-mode-consumer/dist",
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:connect-conformance": "node tests/connect-conformance/run.mjs",
     "test:plugin": "cd tools/buf-plugin-cmdproto && go test ./...",
     "example:greeter": "npm run schema:build:greeter --silent && tsx examples/greeter/src/app.ts",
-    "check": "npm run build:wasm && buf lint && npm run schema:build && npm run schema:build:greeter && npm run build && npm test && npm run test:plugin"
+    "check": "npm run build:wasm && buf lint && npm run schema:build && npm run schema:build:greeter && npm run schema:build:dual-mode && npm run build && npm test && npm run test:plugin"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0",

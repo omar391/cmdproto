@@ -3,6 +3,13 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "cmdproto": ["./runtimes/runtime.ts"],
+      "cmdproto/connect": ["./connect/core.ts"],
+      "cmdproto/connect/bootstrap": ["./connect/bootstrap.ts"],
+      "cmdproto/*": ["./*"]
+    },
     "strict": true,
     "declaration": true,
     "declarationMap": true,

@@ -2,6 +2,7 @@ version: v2
 modules:
   - path: proto
   - path: examples/greeter/proto
+  - path: examples/dual-mode-consumer/proto
 lint:
   use:
     - STANDARD
