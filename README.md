@@ -118,6 +118,106 @@ should use `cmdproto build`, which wraps the common Buf generate/lint/build plus
 runtime-manifest flow. Consumer machines do not need Go installed for schema
 build and lint.
 
+## Developer Checkout Installation
+
+`cmdproto install` adds a small launcher for the checkout you are standing in.
+It is a development convenience, not a release installer: the generated
+launcher normally runs the sources from that checkout, so editing the checkout
+changes the command, and a command-scoped environment variable can select
+another worktree at runtime. Released packages keep using their own package
+manager (`npm install`, `cargo install`, `go install`, and so on).
+
+Run it from the cmdproto checkout to install cmdproto itself:
+
+```sh
+cmdproto install
+```
+
+Run it from a consumer checkout to install that consumer's CLI:
+
+```sh
+cmdproto install --cwd /path/to/consumer
+```
+
+A consumer declares how it should be launched:
+
+```json
+{
+  "cmdproto": {
+    "install": {
+      "command": "tabgate",
+      "runScript": "cmdproto:run",
+      "sourceEnv": "TABGATE_WORKTREE"
+    }
+  }
+}
+```
+
+`cmdproto init --runtime ts` writes `command` and `runScript` for you, using
+the initialized app name and the generated `cmdproto:run` script. `sourceEnv`
+is optional; omit it to use the command-derived default described below.
+
+| Option | Meaning |
+| --- | --- |
+| `--cwd <dir>` | Directory used to find the checkout; the nearest `package.json` wins |
+| `--name <command>` | Installed command name, overriding `cmdproto.install.command` |
+| `--run-script <script>` | Package script to run, overriding `cmdproto.install.runScript` |
+| `--source-env <variable>` | Source-checkout override variable, overriding `cmdproto.install.sourceEnv` |
+| `--force` | Replace another checkout's launcher, or shadow a same-named command |
+
+Launchers are written to `~/.local/bin` (`%USERPROFILE%\.local\bin` on
+Windows). When that directory is not already on `PATH`, the command adds one
+managed block for the detected shell: `~/.zshrc`, `~/.bashrc`,
+`~/.config/fish/conf.d/cmdproto-path.fish`, or `~/.profile`. On Windows it
+updates the user-level `Path`. The change applies to new shells, and the
+result reports whether a new shell is required.
+
+Consumer launchers run the configured script with `bun`, `npm`, `pnpm`, or
+`yarn`, chosen from `packageManager` and defaulting to `npm`. The launcher
+validates the checkout, the script, and the package manager before starting,
+forwards arguments in order, and preserves the child's exit code and streams.
+A missing checkout or script exits `66`; a missing package manager exits `127`.
+
+At runtime, a launcher may use another worktree without being reinstalled. The
+default override variable is the installed command in uppercase with every
+non-alphanumeric character changed to `_`, followed by `_SRC` (`tabgate`
+becomes `TABGATE_SRC`). For example:
+
+```sh
+git worktree add worktrees/fix-auth -b fix-auth
+TABGATE_SRC="$PWD/worktrees/fix-auth" tabgate users list
+```
+
+Set `cmdproto.install.sourceEnv` or pass `--source-env` to choose another
+variable name. An unset variable uses the checkout recorded at installation;
+an invalid override fails with exit `66` and names the variable. The recorded
+checkout remains the ownership identity used by install and uninstall.
+
+Installation is careful with things it does not own. A file that cmdproto did
+not write is never overwritten or removed, with or without `--force`; the same
+is true for a symlink or a half-written Windows launcher pair. Replacing a
+launcher owned by a different checkout, or shadowing a same-named command
+already on `PATH`, requires `--force`. Reinstalling the same configuration
+changes nothing and reports `unchanged`. On Windows, a same-bin executable
+whose extension precedes `.CMD` in `PATHEXT` cannot be shadowed by the managed
+launcher and is refused even with `--force`.
+
+```sh
+cmdproto uninstall
+cmdproto uninstall --cwd /path/to/consumer --name tabgate
+```
+
+`uninstall` removes only launchers owned by the current checkout, so removing
+one launcher reveals any same-named command that was previously shadowed. It
+deliberately leaves the shared `PATH` configuration in place, because that
+entry belongs to every launcher in the directory rather than to one command.
+
+Both commands print one JSON object on success and, on failure, one JSON error
+object on stderr with a stable code and an exit class: `2` for usage or
+configuration problems, `3` for a safety refusal, and `4` for an environment
+or filesystem failure.
+
+
 ## Authoring A New App
 
 ```proto

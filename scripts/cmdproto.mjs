@@ -2,6 +2,12 @@
 
 import { renderUsage } from "./lib/cli-shared.mjs";
 import { getBuildUsage, runBuild } from "./lib/build-command.mjs";
+import {
+  getInstallUsage,
+  getUninstallUsage,
+  runInstall,
+  runUninstall
+} from "./lib/install-command.mjs";
 import { getInitUsage, runInit } from "./lib/init-command.mjs";
 
 function main(argv) {
@@ -19,6 +25,12 @@ function main(argv) {
     case "build":
       runBuild(rest);
       return;
+    case "install":
+      process.exitCode = runInstall(rest);
+      return;
+    case "uninstall":
+      process.exitCode = runUninstall(rest);
+      return;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -30,14 +42,18 @@ function getRootUsage() {
       heading: "Commands",
       entries: [
         ["init", "Scaffold a consumer repo with cmdproto defaults"],
-        ["build", "Generate, lint, and compile cmdproto runtime artifacts"]
+        ["build", "Generate, lint, and compile cmdproto runtime artifacts"],
+        ["install", "Install a source-backed launcher for this checkout"],
+        ["uninstall", "Remove this checkout's cmdproto-managed launcher"]
       ]
     },
     {
       heading: "Help",
       entries: [
         ["cmdproto init --help", getInitUsage().split("\n")[0].replace("Usage: ", "")],
-        ["cmdproto build --help", getBuildUsage().split("\n")[0].replace("Usage: ", "")]
+        ["cmdproto build --help", getBuildUsage().split("\n")[0].replace("Usage: ", "")],
+        ["cmdproto install --help", getInstallUsage().split("\n")[0].replace("Usage: ", "")],
+        ["cmdproto uninstall --help", getUninstallUsage().split("\n")[0].replace("Usage: ", "")]
       ]
     }
   ]);

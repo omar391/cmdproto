@@ -1,5 +1,6 @@
 export function formatTable(entries) {
-  return entries.map(([label, description]) => `  ${label.padEnd(24)}${description}`);
+  const width = entries.reduce((longest, [label]) => Math.max(longest, label.length), 0) + 2;
+  return entries.map(([label, description]) => `  ${label.padEnd(width)}${description}`);
 }
 
 export function renderUsage(headline, sections = []) {

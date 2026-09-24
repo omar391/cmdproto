@@ -197,6 +197,18 @@ function writePackageJson(config) {
     pkg.devDependencies["@types/node"] ??= "^24.10.0";
     pkg.devDependencies["tsx"] ??= "^4.20.6";
     pkg.devDependencies["typescript"] ??= "^5.9.3";
+    // Record how `cmdproto install` should launch this consumer so the
+    // launcher does not have to guess an entry point. Unrelated cmdproto keys
+    // are preserved.
+    const cmdproto = pkg.cmdproto && typeof pkg.cmdproto === "object" && !Array.isArray(pkg.cmdproto)
+      ? { ...pkg.cmdproto }
+      : {};
+    cmdproto.install = {
+      ...(cmdproto.install && typeof cmdproto.install === "object" ? cmdproto.install : {}),
+      command: cmdproto.install?.command ?? config.appToken,
+      runScript: "cmdproto:run"
+    };
+    pkg.cmdproto = cmdproto;
   }
 
   ensureParentDirectory(path);
