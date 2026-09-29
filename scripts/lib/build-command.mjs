@@ -2,6 +2,11 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  computeFingerprint,
+  readValidRecord,
+  writeRecord
+} from "./build-cache.mjs";
 import { normalizeToken, renderUsage, requireValue } from "./cli-shared.mjs";
 
 const LIB_DIR = dirname(fileURLToPath(import.meta.url));
@@ -31,6 +36,21 @@ export function runBuild(argv) {
     return;
   }
 
+  // Fingerprint once up front: it decides the cache hit, and it is the
+  // baseline the post-build re-check compares against. A null fingerprint
+  // means the inputs cannot be fingerprinted safely, which disables caching
+  // for this run rather than failing the build.
+  const preBuild = computeFingerprint(config);
+  const cacheable = preBuild !== null;
+  if (
+    !config.noCache &&
+    cacheable &&
+    readValidRecord(config.cwd, preBuild.fingerprint, preBuild.key, config)
+  ) {
+    process.stdout.write("cmdproto build: cache hit, outputs verified\n");
+    return;
+  }
+
   run("buf", ["lint", config.proto, "--config", config.bufConfig], config.cwd);
   mkdirSync(dirname(config.schemaOut), { recursive: true });
   mkdirSync(dirname(config.runtimeOut), { recursive: true });
@@ -52,6 +72,24 @@ export function runBuild(argv) {
     "--out",
     config.runtimeOut
   ], config.cwd);
+
+  if (!cacheable) {
+    // Inputs could not be fingerprinted, so there is no record to write and no
+    // reason to fail a build that already produced correct outputs.
+    return;
+  }
+
+  // Re-check inputs after the build. An input that changed mid-build leaves no
+  // record, so the next run rebuilds from scratch rather than trusting a
+  // descriptor that never matched a stable input set.
+  const postBuild = computeFingerprint(config);
+  if (postBuild === null || postBuild.key !== preBuild.key) {
+    process.stderr.write(
+      "cmdproto build: inputs changed during build, not writing cache record\n"
+    );
+    process.exit(1);
+  }
+  writeRecord(config.cwd, postBuild.fingerprint, postBuild.key, config);
 }
 
 export function getBuildUsage() {
@@ -69,6 +107,7 @@ export function getBuildUsage() {
         ["--runtime-out <path>", "Runtime manifest output, default: <out-dir>/runtime.binpb"],
         ["--generate", "Run buf generate before schema build"],
         ["--generate-only", "Run buf generate and skip schema build"],
+        ["--no-cache", "Force a full build and refresh the build cache record"],
         ["--help", "Show this message"]
       ]
     }
@@ -84,6 +123,7 @@ function parseBuildArgs(argv) {
     generate: false,
     generateOnly: false,
     help: false,
+    noCache: false,
     outDir: "dist",
     proto: "proto",
     runtimeOut: "",
@@ -123,6 +163,9 @@ function parseBuildArgs(argv) {
       case "--generate-only":
         options.generateOnly = true;
         break;
+      case "--no-cache":
+        options.noCache = true;
+        break;
       case "--help":
       case "-h":
         options.help = true;
@@ -142,10 +185,12 @@ function buildConfig(options) {
   return {
     appName: options.appName || normalizeToken(basename(cwd)),
     bufConfig: options.bufConfig,
+    bufConfigPath: resolvePath(cwd, options.bufConfig),
     bufGenTemplate: options.bufGenTemplate,
     cwd,
     generate: options.generate,
     generateOnly: options.generateOnly,
+    noCache: options.noCache,
     proto: options.proto,
     runtimeOut: resolvePath(cwd, options.runtimeOut || join(outDir, "runtime.binpb")),
     schemaOut: resolvePath(cwd, options.schemaOut || join(outDir, "schema.binpb"))
